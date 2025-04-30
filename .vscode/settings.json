@@ -16,7 +16,11 @@
         "spi_common.h": "c",
         "spi_types.h": "c",
         "freertos.h": "c",
-        "esp_log.h": "c"
+        "esp_log.h": "c",
+        "stdint.h": "c",
+        "stdlib.h": "c",
+        "string.h": "c",
+        "gui_paint.h": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"
