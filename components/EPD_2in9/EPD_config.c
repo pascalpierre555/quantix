@@ -138,6 +138,15 @@ UBYTE DEV_SPI_ReadData()
 
 int DEV_Module_Init(void)
 {
+    gpio_config_t io_conf = {
+        .pin_bit_mask = 1ULL << EPD_BUSY_PIN | 1ULL << EPD_RST_PIN | 1ULL << EPD_DC_PIN | 1ULL << EPD_CS_PIN | 1ULL << EPD_PWR_PIN | 1ULL << EPD_SCK_PIN | 1ULL << EPD_MOSI_PIN,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+
     DEV_Digital_Write(EPD_DC_PIN, 0);
     DEV_Digital_Write(EPD_CS_PIN, 0);
 	DEV_Digital_Write(EPD_PWR_PIN, 1);
