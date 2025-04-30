@@ -11,7 +11,11 @@
         "array": "c",
         "string": "c",
         "string_view": "c",
-        "span": "c"
+        "span": "c",
+        "spi_master.h": "c",
+        "spi_common.h": "c",
+        "spi_types.h": "c",
+        "freertos.h": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"
