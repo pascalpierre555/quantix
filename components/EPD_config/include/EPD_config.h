@@ -83,7 +83,7 @@
 /**
  * delay x ms
 **/
-#define DEV_Delay_ms(__xms) vTaskDelay(pdMS_TO_TICKS(ms))
+#define DEV_Delay_ms(__xms) vTaskDelay((__xms) / portTICK_PERIOD_MS)
 
 /**
  * Function prototypes
