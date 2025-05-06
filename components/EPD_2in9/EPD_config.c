@@ -30,6 +30,7 @@
 #
 ******************************************************************************/
 #include "EPD_config.h"
+#include "freertos/task.h"
 
 spi_device_handle_t spi_handle;
 
@@ -65,7 +66,29 @@ void DEV_GPIO_Mode(gpio_num_t gpio, uint32_t mode) {
 
 void DEV_GPIO_Init()
 {
-    // do nothing, handled by spi_bus_initialize()
+    gpio_config_t out_conf = {
+        .pin_bit_mask = (1ULL << EPD_RST_PIN) |
+                        (1ULL << EPD_DC_PIN)  |
+                        (1ULL << EPD_CS_PIN)  |
+                        (1ULL << EPD_PWR_PIN) |
+                        (1ULL << EPD_SCK_PIN) |
+                        (1ULL << EPD_MOSI_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&out_conf);
+
+    // 輸入腳 (BUSY)
+    gpio_config_t in_conf = {
+        .pin_bit_mask = (1ULL << EPD_BUSY_PIN),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&in_conf);
 }
 
 void DEV_SPI_Init() {
@@ -79,7 +102,7 @@ void DEV_SPI_Init() {
     spi_device_interface_config_t devcfg = {
         .clock_speed_hz = 10 * 1000 * 1000,    // 10MHz
         .mode = 0,                              // SPI mode 0
-        .spics_io_num = EPD_CS_PIN,           // 自動控制 CS 腳
+        .spics_io_num = -1,           // 自動控制 CS 腳
         .queue_size = 7,
     };
     spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
@@ -138,15 +161,9 @@ UBYTE DEV_SPI_ReadData()
 
 int DEV_Module_Init(void)
 {
-    gpio_config_t io_conf = {
-        .pin_bit_mask = 1ULL << EPD_BUSY_PIN | 1ULL << EPD_RST_PIN | 1ULL << EPD_DC_PIN | 1ULL << EPD_CS_PIN | 1ULL << EPD_PWR_PIN | 1ULL << EPD_SCK_PIN | 1ULL << EPD_MOSI_PIN,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&io_conf);
 
+    DEV_GPIO_Init();
+    DEV_SPI_Init();
     DEV_Digital_Write(EPD_DC_PIN, 0);
     DEV_Digital_Write(EPD_CS_PIN, 0);
 	DEV_Digital_Write(EPD_PWR_PIN, 1);

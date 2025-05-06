@@ -7,6 +7,8 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "wifi_manager.h"
+#define TAG "MAIN"
 
 void app_main(void)
 {

@@ -5,7 +5,7 @@
     "idf.openOcdConfigs": [
         "board/esp32s3-builtin.cfg"
     ],
-    "idf.port": "/dev/ttyACM0",
+    "idf.port": "/dev/ttyUSB0",
     "idf.toolsPath": "/home/peng/.espressif",
     "files.associations": {
         "array": "c",
@@ -20,10 +20,13 @@
         "stdint.h": "c",
         "stdlib.h": "c",
         "string.h": "c",
-        "gui_paint.h": "c"
+        "gui_paint.h": "c",
+        "epd_2in9.h": "c",
+        "esp_system.h": "c",
+        "task.h": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"
     },
-    "idf.flashType": "JTAG"
+    "idf.flashType": "UART"
 }
