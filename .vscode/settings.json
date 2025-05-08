@@ -23,7 +23,9 @@
         "gui_paint.h": "c",
         "epd_2in9.h": "c",
         "esp_system.h": "c",
-        "task.h": "c"
+        "task.h": "c",
+        "random": "c",
+        "nvs_flash.h": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"

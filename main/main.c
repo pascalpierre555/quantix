@@ -30,27 +30,53 @@ SOFTWARE.
 #include <string.h>
 #include <esp_wifi.h>
 #include <esp_netif.h>
-#include <inttypes.h>
+#include <nvs_flash.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "EPD_config.h"
+#include "GUI_Paint.h"
+#include "EPD_2in9.h"
+#include "ImageData.h"
 
 #include "wifi_manager.h"
 
 /* @brief tag used for ESP serial console messages */
 static const char TAG[] = "main";
 
-/**
- * @brief RTOS task that periodically prints the heap memory available.
- * @note Pure debug information, should not be ever started on production code! This is an example on how you can integrate your code with wifi-manager
- */
-void monitoring_task(void *pvParameter)
+int screen_startup()
 {
-	for(;;){
-		ESP_LOGI(TAG, "free heap: %" PRIu32,esp_get_free_heap_size());
-		vTaskDelay( pdMS_TO_TICKS(10000) );
-	}
+	printf("EPD_2IN9_V2_test Demo\r\n");
+    if(DEV_Module_Init()!=0){
+        return -1;
+    }
+
+    printf("e-Paper Init and Clear...\r\n");
+	EPD_2IN9_V2_Init();
+    EPD_2IN9_V2_Clear();
+    DEV_Delay_ms(1000);
+
+    //Create a new image cache
+    UBYTE *BlackImage;
+    UWORD Imagesize = ((EPD_2IN9_V2_WIDTH % 8 == 0)? (EPD_2IN9_V2_WIDTH / 8 ): (EPD_2IN9_V2_WIDTH / 8 + 1)) * EPD_2IN9_V2_HEIGHT;
+    if((BlackImage = (UBYTE *)malloc(Imagesize)) == NULL) {
+        printf("Failed to apply for black memory...\r\n");
+        return -1;
+    }
+	Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, 90, WHITE);
+	Paint_SelectImage(BlackImage);
+    Paint_Clear(WHITE);
+    // Paint_DrawBitMap(gImage_wifiqrcode);
+	Paint_DrawBitMap_Paste(gImage_wifiqrcode, 0, 0, 99, 99, 1);
+	EPD_2IN9_V2_Display(BlackImage);
+    DEV_Delay_ms(3000);
+	printf("Goto Sleep...\r\n");
+    EPD_2IN9_V2_Sleep();
+    DEV_Delay_ms(2000);//important, at least 2s
+    // close 5V
+    printf("close 5V, Module enters 0 power consumption ...\r\n");
+    return 0;
 }
 
 
@@ -69,12 +95,10 @@ void cb_connection_ok(void *pvParameter){
 
 void app_main()
 {
-	/* start the wifi manager */
-	wifi_manager_start();
+	screen_startup();
+    // 啟動 Wi-Fi Manager
+    wifi_manager_start();
 
-	/* register a callback as an example to how you can integrate your code with the wifi manager */
-	wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_connection_ok);
-
-	/* your code should go here. Here we simply create a task on core 2 that monitors free heap memory */
-	xTaskCreatePinnedToCore(&monitoring_task, "monitoring_task", 2048, NULL, 1, NULL, 1);
+    // 設定回呼
+    wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_connection_ok);
 }

@@ -122,6 +122,12 @@ extern const unsigned char gImage_7in5bc_ry[];
 extern const unsigned char gImage_7in5_V2_b[];
 extern const unsigned char gImage_7in5_V2_ry[];
 
+/* --------------------------------------- */
+
+// wifiqrcode.c
+
+extern const unsigned char gImage_wifiqrcode[];
+
 #endif
 /* FILE END */
 
