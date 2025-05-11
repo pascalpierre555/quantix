@@ -5,7 +5,7 @@
     "idf.openOcdConfigs": [
         "board/esp32s3-builtin.cfg"
     ],
-    "idf.port": "/dev/ttyUSB0",
+    "idf.port": "/dev/ttyACM0",
     "idf.toolsPath": "/home/peng/.espressif",
     "files.associations": {
         "array": "c",
@@ -25,10 +25,15 @@
         "esp_system.h": "c",
         "task.h": "c",
         "random": "c",
-        "nvs_flash.h": "c"
+        "nvs_flash.h": "c",
+        "esp_netif.h": "c",
+        "wifi_manager.h": "c",
+        "imagedata.h": "c",
+        "epd_config.h": "c",
+        "cstdint": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"
     },
-    "idf.flashType": "UART"
+    "idf.flashType": "JTAG"
 }

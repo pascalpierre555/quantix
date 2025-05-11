@@ -180,13 +180,37 @@ void EPD_2IN9_V2_ReadBusy(void)
     Debug("e-Paper busy release\r\n");
 }
 
+
+bool EPD_2IN9_V2_WaitUntilIdle(void)
+{
+    Debug("e-Paper busy\r\n");
+
+    int waited_ms = 0;
+    while (DEV_Digital_Read(EPD_BUSY_PIN) == 1) {  // BUSY = 1 表示忙
+        DEV_Delay_ms(50);
+        waited_ms += 50;
+        if (waited_ms >= EPD_BUSY_TIMEOUT_MS) {
+            Debug("e-Paper busy timeout!\r\n");
+            return false;
+        }
+    }
+
+    DEV_Delay_ms(50);  // 保險延遲
+    Debug("e-Paper busy release\r\n");
+    return true;
+}
+
 static void EPD_2IN9_V2_LUT(UBYTE *lut)
 {
 	UBYTE count;
 	EPD_2IN9_V2_SendCommand(0x32);
 	for(count=0; count<153; count++) 
 		EPD_2IN9_V2_SendData(lut[count]); 
-	EPD_2IN9_V2_ReadBusy();
+	if (!EPD_2IN9_V2_WaitUntilIdle()) {
+		// 錯誤處理：重試、記錄、或報錯
+		Debug("EPD BUSY timeout");
+		return;
+	}
 }
 
 static void EPD_2IN9_V2_LUT_by_host(UBYTE *lut)
@@ -214,7 +238,11 @@ static void EPD_2IN9_V2_TurnOnDisplay(void)
 	EPD_2IN9_V2_SendCommand(0x22); //Display Update Control
 	EPD_2IN9_V2_SendData(0xc7);
 	EPD_2IN9_V2_SendCommand(0x20); //Activate Display Update Sequence
-	EPD_2IN9_V2_ReadBusy();
+	if (!EPD_2IN9_V2_WaitUntilIdle()) {
+		// 錯誤處理：重試、記錄、或報錯
+		Debug("EPD BUSY timeout");
+    	return;
+	}
 }
 
 static void EPD_2IN9_V2_TurnOnDisplay_Partial(void)
@@ -222,7 +250,11 @@ static void EPD_2IN9_V2_TurnOnDisplay_Partial(void)
 	EPD_2IN9_V2_SendCommand(0x22); //Display Update Control
 	EPD_2IN9_V2_SendData(0x0F);   
 	EPD_2IN9_V2_SendCommand(0x20); //Activate Display Update Sequence
-	EPD_2IN9_V2_ReadBusy();
+	if (!EPD_2IN9_V2_WaitUntilIdle()) {
+		// 錯誤處理：重試、記錄、或報錯
+		Debug("EPD BUSY timeout");
+    	return;
+	}
 }
 
 /******************************************************************************
@@ -265,9 +297,17 @@ void EPD_2IN9_V2_Init(void)
 	EPD_2IN9_V2_Reset();
 	DEV_Delay_ms(100);
 
-	EPD_2IN9_V2_ReadBusy();   
+	if (!EPD_2IN9_V2_WaitUntilIdle()) {
+		// 錯誤處理：重試、記錄、或報錯
+		Debug("EPD BUSY timeout");
+    	return;
+	}   
 	EPD_2IN9_V2_SendCommand(0x12); // soft reset
-	EPD_2IN9_V2_ReadBusy();
+	if (!EPD_2IN9_V2_WaitUntilIdle()) {
+		// 錯誤處理：重試、記錄、或報錯
+		Debug("EPD BUSY timeout");
+    	return;
+	}
 	
 	EPD_2IN9_V2_SendCommand(0x01); //Driver output control      
 	EPD_2IN9_V2_SendData(0x27);
@@ -284,7 +324,11 @@ void EPD_2IN9_V2_Init(void)
 	EPD_2IN9_V2_SendData(0x80);	
 	
 	EPD_2IN9_V2_SetCursor(0, 0);
-	EPD_2IN9_V2_ReadBusy();	
+	if (!EPD_2IN9_V2_WaitUntilIdle()) {
+		// 錯誤處理：重試、記錄、或報錯
+		Debug("EPD BUSY timeout");
+    	return;
+	}
 	
 	EPD_2IN9_V2_LUT_by_host(WS_20_30);
 }
@@ -294,9 +338,17 @@ void EPD_2IN9_V2_Init_Fast(void)
 	EPD_2IN9_V2_Reset();
 	DEV_Delay_ms(100);
 
-	EPD_2IN9_V2_ReadBusy();   
+	if (!EPD_2IN9_V2_WaitUntilIdle()) {
+		// 錯誤處理：重試、記錄、或報錯
+		Debug("EPD BUSY timeout");
+    	return;
+	} 
 	EPD_2IN9_V2_SendCommand(0x12); // soft reset
-	EPD_2IN9_V2_ReadBusy();
+	if (!EPD_2IN9_V2_WaitUntilIdle()) {
+		// 錯誤處理：重試、記錄、或報錯
+		Debug("EPD BUSY timeout");
+    	return;
+	}
 	
 	EPD_2IN9_V2_SendCommand(0x01); //Driver output control      
 	EPD_2IN9_V2_SendData(0x27);
@@ -316,7 +368,11 @@ void EPD_2IN9_V2_Init_Fast(void)
 	EPD_2IN9_V2_SendData(0x80);	
 	
 	EPD_2IN9_V2_SetCursor(0, 0);
-	EPD_2IN9_V2_ReadBusy();	
+	if (!EPD_2IN9_V2_WaitUntilIdle()) {
+		// 錯誤處理：重試、記錄、或報錯
+		Debug("EPD BUSY timeout");
+    	return;
+	}
 	
 	EPD_2IN9_V2_LUT_by_host(WF_FULL);
 }
@@ -326,9 +382,17 @@ void EPD_2IN9_V2_Gray4_Init(void)
 	EPD_2IN9_V2_Reset();
 	DEV_Delay_ms(100);
 
-	EPD_2IN9_V2_ReadBusy();   
+	if (!EPD_2IN9_V2_WaitUntilIdle()) {
+		// 錯誤處理：重試、記錄、或報錯
+		Debug("EPD BUSY timeout");
+    	return;
+	}
 	EPD_2IN9_V2_SendCommand(0x12); // soft reset
-	EPD_2IN9_V2_ReadBusy();
+	if (!EPD_2IN9_V2_WaitUntilIdle()) {
+		// 錯誤處理：重試、記錄、或報錯
+		Debug("EPD BUSY timeout");
+    	return;
+	}
 	
 	EPD_2IN9_V2_SendCommand(0x01); //Driver output control      
 	EPD_2IN9_V2_SendData(0x27);
@@ -344,7 +408,11 @@ void EPD_2IN9_V2_Gray4_Init(void)
 	EPD_2IN9_V2_SendData(0x04);
 	
 	EPD_2IN9_V2_SetCursor(1, 0);
-	EPD_2IN9_V2_ReadBusy();	
+	if (!EPD_2IN9_V2_WaitUntilIdle()) {
+		// 錯誤處理：重試、記錄、或報錯
+		Debug("EPD BUSY timeout");
+    	return;
+	}
 
 	EPD_2IN9_V2_LUT_by_host(Gray4);
 }
@@ -515,7 +583,11 @@ void EPD_2IN9_V2_Display_Partial(UBYTE *Image)
 	EPD_2IN9_V2_SendCommand(0x22); 
 	EPD_2IN9_V2_SendData(0xC0);   
 	EPD_2IN9_V2_SendCommand(0x20); 
-	EPD_2IN9_V2_ReadBusy();  
+	if (!EPD_2IN9_V2_WaitUntilIdle()) {
+		// 錯誤處理：重試、記錄、或報錯
+		Debug("EPD BUSY timeout");
+    	return;
+	}
 	
 	EPD_2IN9_V2_SetWindows(0, 0, EPD_2IN9_V2_WIDTH-1, EPD_2IN9_V2_HEIGHT-1);
 	EPD_2IN9_V2_SetCursor(0, 0);

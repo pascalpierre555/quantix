@@ -1,0 +1,39 @@
+# FreeRTOS-style .clang-format
+
+BasedOnStyle: LLVM
+Language: C
+
+# 總體縮排與格式
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never               # FreeRTOS 使用空格，不使用 tab
+ContinuationIndentWidth: 4
+IndentCaseLabels: false     # switch-case 裡的 case 不縮排
+IndentGotoLabels: false
+
+# 對齊
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true
+AlignOperands: true
+AlignTrailingComments: true
+AlignAfterOpenBracket: Align
+
+# 空白與括號
+PointerAlignment: Left      # int *ptr; 而非 int* ptr;
+SpaceBeforeParens: ControlStatements  # if () 有空格，函式呼叫沒有
+SpacesInParentheses: false
+SpaceAfterCStyleCast: true
+
+# 大括號風格
+BreakBeforeBraces: Linux    # 函式括號另起一行，但 if/else/while 接著寫
+AllowShortFunctionsOnASingleLine: Empty  # 空函式可以寫一行
+AlwaysBreakAfterReturnType: None
+AlwaysBreakBeforeMultilineStrings: false
+
+# 其他風格
+ColumnLimit: 100
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+SortIncludes: false
+AllowShortIfStatementsOnASingleLine: false
+DerivePointerAlignment: false
