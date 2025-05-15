@@ -26,6 +26,7 @@ SOFTWARE.
 @see https://github.com/tonyp7/esp32-wifi-manager
 */
 
+#include <arpa/inet.h>
 #include <esp_netif.h>
 #include <esp_wifi.h>
 #include <nvs_flash.h>
@@ -41,6 +42,7 @@ SOFTWARE.
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ping/ping_sock.h"
 #include "wifi_manager.h"
 
 /* @brief tag used for ESP serial console messages */
@@ -80,9 +82,9 @@ void screenStartup(void *pvParameters) {
     Paint_Clear(WHITE);
 
     // Draw qrcode and instruction text
-    char instructionText[] = "Scan QR code to setup Wi-Fi";
+    char instructionText[] = " Scan QR code  to setup Wi-Fi";
     Paint_DrawBitMap_Paste(gImage_wifiqrcode, 14, 14, 99, 99, 1);
-    Paint_DrawString_EN(130, 10, instructionText, &Font20, WHITE, BLACK);
+    Paint_DrawString_EN(130, 30, instructionText, &Font16, WHITE, BLACK);
     EPD_2IN9_V2_Display(BlackImage);
     DEV_Delay_ms(3000);
     printf("Goto Sleep...\r\n");
@@ -91,6 +93,26 @@ void screenStartup(void *pvParameters) {
     // close 5V
     printf("close 5V, Module enters 0 power consumption ...\r\n");
     vTaskDelete(NULL);
+}
+
+// get ping result when ping end, if ping success, do nothing, if ping
+// failed, switch to AP mode
+void CallbackOnPingEnd(esp_ping_handle_t hdl, void *args) {
+    uint32_t transmitted = 0, received = 0;
+    esp_ping_get_profile(hdl, ESP_PING_PROF_REQUEST, &transmitted,
+                         sizeof(transmitted));
+    esp_ping_get_profile(hdl, ESP_PING_PROF_REPLY, &received, sizeof(received));
+    esp_ping_delete_session(hdl);
+
+    if (received == 0) {
+        printf("Ping failed. Switching to AP mode.\n");
+
+        // 離線 & 啟動 AP
+        wifi_manager_disconnect_async(); // 離線（會觸發 DISCONNECTED 邏輯）
+        wifi_manager_send_message(WM_ORDER_START_AP, NULL); // 啟動 AP
+    } else {
+        printf("Ping success.\n");
+    }
 }
 
 /**
@@ -105,6 +127,18 @@ void cb_connection_ok(void *pvParameter) {
     esp_ip4addr_ntoa(&param->ip_info.ip, str_ip, IP4ADDR_STRLEN_MAX);
 
     ESP_LOGI(TAG, "I have a connection and my IP is %s!", str_ip);
+
+    // 建立 ping session
+    esp_ping_config_t ping_config = ESP_PING_DEFAULT_CONFIG();
+    ping_config.target_addr.u_addr.ip4.addr = inet_addr("8.8.8.8");
+    ping_config.target_addr.type = ESP_IPADDR_TYPE_V4;
+    ping_config.count = 4;
+    esp_ping_callbacks_t cbs;
+    cbs.on_ping_end = CallbackOnPingEnd;
+    esp_ping_handle_t ping;
+
+    esp_ping_new_session(&ping_config, &cbs, &ping);
+    esp_ping_start(ping);
 }
 
 void app_main() {
