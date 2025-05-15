@@ -5,7 +5,7 @@
     "idf.openOcdConfigs": [
         "board/esp32s3-builtin.cfg"
     ],
-    "idf.port": "/dev/ttyACM0",
+    "idf.port": "/dev/ttyUSB0",
     "idf.toolsPath": "/home/peng/.espressif",
     "files.associations": {
         "array": "c",
@@ -30,15 +30,11 @@
         "wifi_manager.h": "c",
         "imagedata.h": "c",
         "epd_config.h": "c",
-<<<<<<< HEAD:quantix/.vscode/settings.json
         "cstdint": "c",
         "esp_ping.h": "c"
-=======
-        "cstdint": "c"
->>>>>>> 104beed (feat: Add timeout for busy state and improve screen initialization):.vscode/settings.json
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"
     },
-    "idf.flashType": "JTAG"
+    "idf.flashType": "UART"
 }
