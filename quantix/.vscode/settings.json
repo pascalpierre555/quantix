@@ -31,7 +31,8 @@
         "imagedata.h": "c",
         "epd_config.h": "c",
         "cstdint": "c",
-        "esp_ping.h": "c"
+        "esp_ping.h": "c",
+        "cjson.h": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"
