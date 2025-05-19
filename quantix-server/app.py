@@ -1,39 +1,58 @@
-from flask import Flask, request, jsonify, abort
-import uuid
+from flask import Flask, request, jsonify
+import jwt                       # 🔹 pyjwt 套件，用來產生/解析 token
+import datetime                  # 🔹 處理過期時間
+from functools import wraps     # 🔹 保留函式原名的裝飾器工具
+import finnhub
+
+finnhub_client = finnhub.Client(
+    api_key="d0lgrlpr01qhb028eq80d0lgrlpr01qhb028eq8g")
+print(finnhub_client.quote('AAPL'))
+
 
 app = Flask(__name__)
-
-# 模擬的資料庫
-# device_id -> {'ip': ..., 'user_agent': ..., 'authorized': True}
-REGISTERED_DEVICES = {}
-DEVICE_SECRETS = {"esp32-abc123": "xyz789"}  # 預設裝置 secret
+SECRET_KEY = 'your-secret-key'  # ✅ 建議寫進環境變數
+USERNAME = 'esp32'
+PASSWORD = 'supersecret'
 
 
-@app.route("/register", methods=["POST"])
-def register():
-    data = request.get_json()
-    username = data.get("username")
-    password = data.get("password")
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    if not data or data.get('username') != USERNAME or data.get('password') != PASSWORD:
+        return jsonify({'error': 'Invalid credentials'}), 401
 
-    # 驗證金鑰
-    if DEVICE_SECRETS.get(username) != password:
-        abort(403)
+    token = jwt.encode({
+        'user': data['username'],
+        'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=60)
+    }, SECRET_KEY, algorithm='HS256')
 
-    # 新增 device_id 並記住
-    device_id = str(uuid.uuid4())
-    REGISTERED_DEVICES[device_id] = {
-        "ip": request.remote_addr,
-        "user_agent": request.user_agent.string,
-        "authorized": True,
-    }
-
-    return jsonify({"device_id": device_id})
+    return jsonify({'token': token})
 
 
-@app.route("/login")
-def hello_world():
-    ua = request.user_agent.string
-    ip = request.remote_addr
-    print(f"來自 {ip} 使用 {ua}\n")
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get('Authorization')
+        if not token or not token.startswith("Bearer "):
+            return jsonify({'error': 'Token missing'}), 403
 
-    return "<p>Hello, World!</p>"
+        try:
+            token = token.split(" ")[1]
+            jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
+        except jwt.ExpiredSignatureError:
+            return jsonify({'error': 'Token expired'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'error': 'Invalid token'}), 403
+
+        return f(*args, **kwargs)
+    return decorated
+
+
+@app.route('/api/stock')
+@token_required
+def get_stock():
+    return jsonify({'stock': '2330.TW', 'price': 799.5})
+
+
+if __name__ == '__main__':
+    app.run(host='127.0.0.1', port=5000)
