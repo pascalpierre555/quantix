@@ -32,7 +32,10 @@
         "epd_config.h": "c",
         "cstdint": "c",
         "esp_ping.h": "c",
-        "cjson.h": "c"
+        "cjson.h": "c",
+        "esp_err.h": "c",
+        "inet.h": "c",
+        "net_task.h": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"

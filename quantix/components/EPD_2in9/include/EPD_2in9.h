@@ -34,9 +34,9 @@
 #include "EPD_config.h"
 
 // Display resolution
-#define EPD_2IN9_V2_WIDTH       128
-#define EPD_2IN9_V2_HEIGHT      296
-#define EPD_BUSY_TIMEOUT_MS     5000  // 5 秒 timeout
+#define EPD_2IN9_V2_WIDTH 128
+#define EPD_2IN9_V2_HEIGHT 296
+#define EPD_BUSY_TIMEOUT_MS 5000 // 5 秒 timeout
 
 void EPD_2IN9_V2_Init(void);
 void EPD_2IN9_V2_Init_Fast(void);
