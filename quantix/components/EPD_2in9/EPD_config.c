@@ -31,17 +31,19 @@
 ******************************************************************************/
 #include "EPD_config.h"
 #include "freertos/task.h"
+#include "rom/ets_sys.h"
 
 spi_device_handle_t spi_handle;
 
-void DEV_Delay_ms(uint32_t ms)
-{
-    vTaskDelay(ms / portTICK_PERIOD_MS);
+void DEV_Delay_ms(uint32_t ms) {
+    for (uint32_t i = 0; i < ms; i++) {
+        ets_delay_us(1000); // 1ms = 1000us
+    }
 }
 
 void DEV_SPI_WriteByte(uint8_t value) {
     spi_transaction_t t = {
-        .length = 8,                    // bits
+        .length = 8, // bits
         .tx_buffer = &value,
     };
     spi_device_transmit(spi_handle, &t);
@@ -64,15 +66,10 @@ void DEV_GPIO_Mode(gpio_num_t gpio, uint32_t mode) {
     gpio_config(&io_conf);
 }
 
-void DEV_GPIO_Init()
-{
+void DEV_GPIO_Init() {
     gpio_config_t out_conf = {
-        .pin_bit_mask = (1ULL << EPD_RST_PIN) |
-                        (1ULL << EPD_DC_PIN)  |
-                        (1ULL << EPD_CS_PIN)  |
-                        (1ULL << EPD_PWR_PIN) |
-                        (1ULL << EPD_SCK_PIN) |
-                        (1ULL << EPD_MOSI_PIN),
+        .pin_bit_mask = (1ULL << EPD_RST_PIN) | (1ULL << EPD_DC_PIN) | (1ULL << EPD_CS_PIN) |
+                        (1ULL << EPD_PWR_PIN) | (1ULL << EPD_SCK_PIN) | (1ULL << EPD_MOSI_PIN),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -100,84 +97,71 @@ void DEV_SPI_Init() {
         .quadhd_io_num = -1,
     };
     spi_device_interface_config_t devcfg = {
-        .clock_speed_hz = 10 * 1000 * 1000,    // 10MHz
-        .mode = 0,                              // SPI mode 0
-        .spics_io_num = -1,           // 自動控制 CS 腳
+        .clock_speed_hz = 10 * 1000 * 1000, // 10MHz
+        .mode = 0,                          // SPI mode 0
+        .spics_io_num = -1,                 // 自動控制 CS 腳
         .queue_size = 7,
     };
     spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
     spi_bus_add_device(SPI2_HOST, &devcfg, &spi_handle);
 }
 
-void DEV_SPI_SendData(UBYTE Reg)
-{
-	UBYTE i,j=Reg;
-	DEV_GPIO_Mode(EPD_MOSI_PIN, 1);
+void DEV_SPI_SendData(UBYTE Reg) {
+    UBYTE i, j = Reg;
+    DEV_GPIO_Mode(EPD_MOSI_PIN, 1);
     DEV_GPIO_Mode(EPD_SCK_PIN, 1);
-	DEV_Digital_Write(EPD_CS_PIN, 0);
-	for(i = 0; i<8; i++)
-    {
-        DEV_Digital_Write(EPD_SCK_PIN, 0);     
-        if (j & 0x80)
-        {
+    DEV_Digital_Write(EPD_CS_PIN, 0);
+    for (i = 0; i < 8; i++) {
+        DEV_Digital_Write(EPD_SCK_PIN, 0);
+        if (j & 0x80) {
             DEV_Digital_Write(EPD_MOSI_PIN, 1);
-        }
-        else
-        {
+        } else {
             DEV_Digital_Write(EPD_MOSI_PIN, 0);
         }
-        
+
         DEV_Digital_Write(EPD_SCK_PIN, 1);
         j = j << 1;
     }
-	DEV_Digital_Write(EPD_SCK_PIN, 0);
-	DEV_Digital_Write(EPD_CS_PIN, 1);
+    DEV_Digital_Write(EPD_SCK_PIN, 0);
+    DEV_Digital_Write(EPD_CS_PIN, 1);
 }
 
-UBYTE DEV_SPI_ReadData()
-{
-	UBYTE i,j=0xff;
-	DEV_GPIO_Mode(EPD_MOSI_PIN, 0);
+UBYTE DEV_SPI_ReadData() {
+    UBYTE i, j = 0xff;
+    DEV_GPIO_Mode(EPD_MOSI_PIN, 0);
     DEV_GPIO_Mode(EPD_SCK_PIN, 1);
-	DEV_Digital_Write(EPD_CS_PIN, 0);
-	for(i = 0; i<8; i++)
-	{
-		DEV_Digital_Write(EPD_SCK_PIN, 0);
-		j = j << 1;
-		if (DEV_Digital_Read(EPD_MOSI_PIN))
-		{
+    DEV_Digital_Write(EPD_CS_PIN, 0);
+    for (i = 0; i < 8; i++) {
+        DEV_Digital_Write(EPD_SCK_PIN, 0);
+        j = j << 1;
+        if (DEV_Digital_Read(EPD_MOSI_PIN)) {
             j = j | 0x01;
-		}
-		else
-		{
-            j= j & 0xfe;
-		}
-		DEV_Digital_Write(EPD_SCK_PIN, 1);
-	}
-	DEV_Digital_Write(EPD_SCK_PIN, 0);
-	DEV_Digital_Write(EPD_CS_PIN, 1);
-	return j;
+        } else {
+            j = j & 0xfe;
+        }
+        DEV_Digital_Write(EPD_SCK_PIN, 1);
+    }
+    DEV_Digital_Write(EPD_SCK_PIN, 0);
+    DEV_Digital_Write(EPD_CS_PIN, 1);
+    return j;
 }
 
-int DEV_Module_Init(void)
-{
+int DEV_Module_Init(void) {
 
     DEV_GPIO_Init();
     DEV_SPI_Init();
     DEV_Digital_Write(EPD_DC_PIN, 0);
     DEV_Digital_Write(EPD_CS_PIN, 0);
-	DEV_Digital_Write(EPD_PWR_PIN, 1);
+    DEV_Digital_Write(EPD_PWR_PIN, 1);
     DEV_Digital_Write(EPD_RST_PIN, 1);
     return 0;
 }
 
-void DEV_Module_Exit(void)
-{
+void DEV_Module_Exit(void) {
     DEV_Digital_Write(EPD_DC_PIN, 0);
     DEV_Digital_Write(EPD_CS_PIN, 0);
 
-    //close 5V
-	DEV_Digital_Write(EPD_PWR_PIN, 0);
+    // close 5V
+    DEV_Digital_Write(EPD_PWR_PIN, 0);
     DEV_Digital_Write(EPD_RST_PIN, 0);
 }
-

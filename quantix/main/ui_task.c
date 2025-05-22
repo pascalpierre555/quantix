@@ -45,12 +45,31 @@ void viewDisplay(void *PvParameters) {
 
                 printf("Goto Sleep...\r\n");
                 EPD_2IN9_V2_Sleep();
-                DEV_Delay_ms(2000);
+                vTaskDelay(2000 / portTICK_PERIOD_MS);
                 printf("close 5V, Module enters 0 power consumption ...\r\n");
                 view_current = event;
                 xSemaphoreGive(xScreen);
             }
             break;
+        case SCREEN_EVENT_NO_CONNECTION:
+            if ((view_current != SCREEN_EVENT_NO_CONNECTION) &&
+                (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE)) {
+                EPD_2IN9_V2_Init_Fast();
+                EPD_2IN9_V2_Clear();
+                Paint_SelectImage(BlackImage);
+                Paint_Clear(WHITE);
+
+                Paint_DrawBitMap_Paste(gImage_wifiqrcode, 14, 14, 99, 99, 1);
+                Paint_DrawRectangle(125, 25, 135 + Font16.Width * 14, 35 + Font16.Height * 2, BLACK,
+                                    DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+                Paint_DrawString_EN(130 + Font16.Width / 2, 30, " no internet", &Font16, WHITE,
+                                    BLACK);
+                Paint_DrawString_EN(130 + Font16.Width * 4, 30 + Font16.Height, "access", &Font16,
+                                    WHITE, BLACK);
+                EPD_2IN9_V2_Display(BlackImage);
+                view_current = event;
+                xSemaphoreGive(xScreen);
+            }
         default:
             break;
         }

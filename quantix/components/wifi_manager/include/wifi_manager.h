@@ -404,6 +404,7 @@ BaseType_t wifi_manager_send_message(message_code_t code, void *param);
 BaseType_t wifi_manager_send_message_to_front(message_code_t code, void *param);
 
 void wifi_manager_clear_sta_config();
+bool wifi_manager_is_ap_started();
 
 #ifdef __cplusplus
 }

@@ -10,7 +10,7 @@
 
 void app_main() {
     // 初始化 NVS
-    ESP_ERROR_CHECK(nvs_flash_init());
+    // ESP_ERROR_CHECK(nvs_flash_init());
 
     // 創建semaphore
     xScreen = xSemaphoreCreateBinary();

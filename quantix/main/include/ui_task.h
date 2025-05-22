@@ -11,6 +11,7 @@ extern TaskHandle_t xViewDisplayHandle;
 // 定義螢幕顯示事件
 enum {
     SCREEN_EVENT_WIFI_REQUIRED = 1,
+    SCREEN_EVENT_NO_CONNECTION = 2,
 };
 
 void screenStartup(void *pvParameters);

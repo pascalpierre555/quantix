@@ -9,10 +9,15 @@
 #include <arpa/inet.h>
 #include <esp_netif.h>
 #include <esp_wifi.h>
+#include <freertos/event_groups.h>
 #include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "NET_TASK";
+
+// 定義憑證檔案的路徑
+extern const char isrgrootx1_pem_start[] asm("_binary_isrgrootx1_pem_start");
+extern const char isrgrootx1_pem_end[] asm("_binary_isrgrootx1_pem_end");
 
 // 定義 HTTP 事件處理函式
 esp_err_t _http_event_handler(esp_http_client_event_t *evt) { return ESP_OK; }
@@ -35,9 +40,11 @@ TaskHandle_t xStatusCheckHandle = NULL;
 
 bool http_check_connectivity() {
     esp_http_client_config_t config = {
-        .url = "https://peng-pc.tail941dce.ts.net/", // 換成你的 Flask API 位置
+        .url = LOGIN_URL,
         .event_handler = _http_event_handler,
-        .timeout_ms = 3000};
+        .timeout_ms = 3000,
+        .cert_pem = isrgrootx1_pem_start,
+    };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
 
@@ -76,10 +83,14 @@ void cb_connection_ok(void *pvParameter) {
     if (!http_check_connectivity()) {
         ESP_LOGE(TAG, "HTTP connectivity check failed.");
         ESP_LOGI(TAG, "Switching to AP mode...");
+        xTaskNotify(xViewDisplayHandle, SCREEN_EVENT_NO_CONNECTION, eSetValueWithoutOverwrite);
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
         xTaskNotify(xViewDisplayHandle, SCREEN_EVENT_WIFI_REQUIRED, eSetValueWithoutOverwrite);
         wifi_manager_clear_sta_config();                          // 清除記憶的 SSID/password
         wifi_manager_send_message(WM_ORDER_DISCONNECT_STA, NULL); // 斷線
-        wifi_manager_send_message(WM_ORDER_START_AP, NULL);       // 啟動配網模式
+        if (!wifi_manager_is_ap_started()) {
+            wifi_manager_send_message(WM_ORDER_START_AP, NULL);
+        }
     }
 }
 
@@ -148,9 +159,9 @@ void statusCheck(void *pvParameters) {
             ESP_LOGE(TAG, "HTTP connectivity check failed.");
             ESP_LOGI(TAG, "Switching to AP mode...");
             xTaskNotify(xViewDisplayHandle, SCREEN_EVENT_WIFI_REQUIRED, eSetValueWithoutOverwrite);
-            wifi_manager_clear_sta_config();
-            wifi_manager_send_message(WM_ORDER_DISCONNECT_STA, NULL);
-            wifi_manager_send_message(WM_ORDER_START_AP, NULL);
+            if (!wifi_manager_is_ap_started()) {
+                wifi_manager_send_message(WM_ORDER_START_AP, NULL);
+            }
         }
         xLastWakeTime = xTaskGetTickCount();
     }

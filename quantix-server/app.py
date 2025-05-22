@@ -15,6 +15,11 @@ USERNAME = 'esp32'
 PASSWORD = 'supersecret'
 
 
+@app.route("/ping")
+def ping():
+    return jsonify({"status": "OK", "message": "Connection is alive!"})
+
+
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json

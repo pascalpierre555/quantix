@@ -1347,3 +1347,12 @@ void wifi_manager_clear_sta_config() {
                sizeof(wifi_manager_config_sta->sta.password));
     }
 }
+
+bool wifi_manager_is_ap_started() {
+    EventBits_t uxBits = xEventGroupGetBits(wifi_manager_event_group);
+    if (uxBits & WIFI_MANAGER_AP_STARTED_BIT) {
+        return true;
+    } else {
+        return false;
+    }
+}
