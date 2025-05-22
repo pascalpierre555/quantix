@@ -12,6 +12,7 @@ extern TaskHandle_t xViewDisplayHandle;
 enum {
     SCREEN_EVENT_WIFI_REQUIRED = 1,
     SCREEN_EVENT_NO_CONNECTION = 2,
+    SCREEN_EVENT_WIFI_CONNECTED = 3,
 };
 
 void screenStartup(void *pvParameters);

@@ -70,6 +70,21 @@ void viewDisplay(void *PvParameters) {
                 view_current = event;
                 xSemaphoreGive(xScreen);
             }
+        case SCREEN_EVENT_WIFI_CONNECTED:
+            if ((view_current != SCREEN_EVENT_WIFI_CONNECTED) &&
+                (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE)) {
+                char *displayStr = "Wi-Fi Connected:)";
+                EPD_2IN9_V2_Init_Fast();
+                EPD_2IN9_V2_Clear();
+                Paint_SelectImage(BlackImage);
+                Paint_Clear(WHITE);
+                Paint_DrawString_EN_Center(0, 0, EPD_2IN9_V2_HEIGHT, EPD_2IN9_V2_WIDTH, displayStr,
+                                           &Font16, WHITE, BLACK, 5);
+                EPD_2IN9_V2_Display(BlackImage);
+                view_current = event;
+                xSemaphoreGive(xScreen);
+            }
+            break;
         default:
             break;
         }
