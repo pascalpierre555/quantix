@@ -234,6 +234,7 @@ void server_check_task(void *pvParameters) {
                 .msg = "Server connected successfully:)",
             };
             xQueueSend(event_queue, &ev, portMAX_DELAY);
+            ESP_LOGI(TAG, "Server connected successfully, success count: %d", success_count);
             if (!(TOKEN_AVAILABLE_BIT && xEventGroupGetBits(wifi_event_group))) {
                 // 如果沒有 token，則嘗試登入
                 xTaskNotifyGive(xServerLoginHandle);

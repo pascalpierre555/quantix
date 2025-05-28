@@ -27,6 +27,7 @@ void viewDisplay(void *PvParameters) {
     vTaskSuspend(NULL);
     event_t event;
     uint32_t view_current = 0;
+    char displayStr[MAX_MSG_LEN] = "";
     for (;;) {
         if (xQueueReceive(event_queue, &event, portMAX_DELAY)) {
 
@@ -77,12 +78,10 @@ void viewDisplay(void *PvParameters) {
                 }
                 break;
             case SCREEN_EVENT_CENTER:
-                if ((view_current != SCREEN_EVENT_CENTER) &&
+                if (strcmp(displayStr, event.msg) &&
                     (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE)) {
-                    char *displayStr = event.msg;
-                    if (displayStr == NULL) {
-                        displayStr = "";
-                    }
+                    strncpy(displayStr, event.msg, sizeof(displayStr) - 1);
+                    displayStr[sizeof(displayStr) - 1] = '\0';
                     EPD_2IN9_V2_Init_Fast();
                     EPD_2IN9_V2_Clear();
                     Paint_SelectImage(BlackImage);
@@ -139,6 +138,7 @@ void screenStartup(void *pvParameters) {
     if ((BlackImage = (UBYTE *)malloc(Imagesize)) == NULL) {
         printf("Failed to apply for black memory...\r\n");
     }
+
     Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, 90, WHITE);
     Paint_SelectImage(BlackImage);
     Paint_Clear(WHITE);

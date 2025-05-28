@@ -15,7 +15,6 @@ void app_main() {
 
     // 創建semaphore
     xScreen = xSemaphoreCreateBinary();
-    xSemaphoreTake(xScreen, portMAX_DELAY);
     if (xScreen != NULL) {
         printf("Semaphore for screen created successfully.\r\n");
     } else {

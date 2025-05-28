@@ -6,7 +6,7 @@
 #include "freertos/task.h"
 
 #define EVENT_QUEUE_LENGTH 10
-#define EVENT_QUEUE_ITEM_SIZE sizeof(int)
+#define EVENT_QUEUE_ITEM_SIZE sizeof(event_t)
 #define MAX_MSG_LEN 256
 
 extern SemaphoreHandle_t xScreen;
@@ -22,7 +22,7 @@ enum {
 };
 
 typedef struct {
-    int event_id;
+    int32_t event_id;
     char msg[MAX_MSG_LEN];
 } event_t;
 
