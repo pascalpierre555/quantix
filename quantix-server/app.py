@@ -17,7 +17,7 @@ PASSWORD = 'supersecret'
 
 @app.route("/ping")
 def ping():
-    return jsonify({"status": "OK", "message": "Connection is alive!"})
+    return jsonify({"status": "OK"})
 
 
 @app.route('/login', methods=['POST'])
@@ -26,6 +26,7 @@ def login():
     if not data or data.get('username') != USERNAME or data.get('password') != PASSWORD:
         return jsonify({'error': 'Invalid credentials'}), 401
 
+    print(data.get('username'), data.get('password'))
     token = jwt.encode({
         'user': data['username'],
         'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=60)
@@ -60,4 +61,4 @@ def get_stock():
 
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000)
+    app.run(host='0.0.0.0', port=443, ssl_context=('cert.pem', 'key.pem'))
