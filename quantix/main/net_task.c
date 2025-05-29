@@ -35,37 +35,7 @@ TaskHandle_t xServerLoginHandle = NULL;
 EventGroupHandle_t wifi_event_group;
 
 // 定義 HTTP 事件處理函式
-esp_err_t _http_event_handler(esp_http_client_event_t *evt) {
-    switch (evt->event_id) {
-    case HTTP_EVENT_ERROR:
-        ESP_LOGE(TAG, "HTTP_EVENT_ERROR");
-        break;
-    case HTTP_EVENT_ON_CONNECTED:
-        ESP_LOGI(TAG, "HTTP_EVENT_ON_CONNECTED");
-        break;
-    case HTTP_EVENT_HEADER_SENT:
-        ESP_LOGI(TAG, "HTTP_EVENT_HEADER_SENT");
-        break;
-    case HTTP_EVENT_ON_HEADER:
-        ESP_LOGI(TAG, "HTTP_EVENT_ON_HEADER: %s: %s", evt->header_key, evt->header_value);
-        break;
-    case HTTP_EVENT_ON_DATA:
-        ESP_LOGI(TAG, "HTTP_EVENT_ON_DATA: %d bytes", evt->data_len);
-        if (evt->user_data) {
-            memcpy(evt->user_data, evt->data, evt->data_len);
-        }
-        break;
-    case HTTP_EVENT_ON_FINISH:
-        ESP_LOGI(TAG, "HTTP_EVENT_ON_FINISH");
-        break;
-    case HTTP_EVENT_DISCONNECTED:
-        ESP_LOGI(TAG, "HTTP_EVENT_DISCONNECTED");
-        break;
-    default:
-        break;
-    }
-    return ESP_OK;
-}
+esp_err_t _http_event_handler(esp_http_client_event_t *evt) { return ESP_OK; }
 
 // 定義登入事件處理函式
 esp_err_t login_event_handler(esp_http_client_event_t *evt) {
@@ -102,11 +72,9 @@ bool http_check_server_connectivity(esp_http_client_handle_t client) {
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "HTTP connected successfully. Status = %d",
                  esp_http_client_get_status_code(client));
-        esp_http_client_cleanup(client);
         return 1;
     } else {
         ESP_LOGE(TAG, "HTTP connection failed: %s", esp_err_to_name(err));
-        esp_http_client_cleanup(client);
         return 0;
     }
 }
@@ -121,7 +89,7 @@ bool http_check_server_connectivity(esp_http_client_handle_t client) {
  */
 
 void server_login(void *pvParameter) {
-    ESP_LOGI(TAG, "No token found. Logging in...");
+
     // char *buf = malloc((buf_size + 1) * sizeof(char));
     const char *post_data = "{\"username\":\"esp32\", \"password\":\"supersecret\"}";
     esp_http_client_config_t config = {
@@ -141,6 +109,7 @@ void server_login(void *pvParameter) {
 
     for (;;) {
         ulTaskNotifyTake(pdTRUE, token_expire_time / portTICK_PERIOD_MS); // 等待通知喚醒
+        ESP_LOGI(TAG, "No token found. Logging in...");
         xEventGroupClearBits(wifi_event_group, TOKEN_AVAILABLE_BIT);
         esp_err_t err = esp_http_client_perform(client);
         if (err == ESP_OK) {
@@ -163,6 +132,7 @@ void server_login(void *pvParameter) {
         } else {
             ESP_LOGE(TAG, "Login failed: %s", esp_err_to_name(err));
             xEventGroupClearBits(wifi_event_group, SERVER_CONNECTED_BIT);
+            vTaskResume(xServerCheckHandle);     // 喚醒 server_check_task
             xTaskNotifyGive(xServerCheckHandle); // 喚醒 server_check_task
         }
     }
@@ -206,23 +176,25 @@ void cb_wifi_required(void *pvParameter) {
 void server_check_task(void *pvParameters) {
     uint8_t success_count = 0;
     uint8_t failure_count = 0;
-    TickType_t retry_delay_ms = 1000;
-
     esp_http_client_config_t config = {
-        .url = LOGIN_URL,
+        .url = TEST_URL,
         .event_handler = _http_event_handler,
         .timeout_ms = 3000,
         .cert_pem = isrgrootx1_pem_start,
     };
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_http_client_handle_t client;
+    TickType_t retry_delay_ms = 1000;
 
     for (;;) {
-        // Block，等待其他任務用 xTaskNotifyGive() 喚醒
         ulTaskNotifyTake(pdTRUE, retry_delay_ms / portTICK_PERIOD_MS);
-        retry_delay_ms = 1000;
-        xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdTRUE, pdFALSE, portMAX_DELAY);
+        xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, portMAX_DELAY);
 
+        client = esp_http_client_init(&config);
+        if (!client) {
+            ESP_LOGE(TAG, "Failed to initialize HTTP client");
+            vTaskDelay(retry_delay_ms / portTICK_PERIOD_MS);
+            continue;
+        }
         if (http_check_server_connectivity(client)) {
             ESP_LOGI(TAG, "Send success");
             success_count++;
@@ -235,29 +207,31 @@ void server_check_task(void *pvParameters) {
             };
             xQueueSend(event_queue, &ev, portMAX_DELAY);
             ESP_LOGI(TAG, "Server connected successfully, success count: %d", success_count);
-            if (!(TOKEN_AVAILABLE_BIT && xEventGroupGetBits(wifi_event_group))) {
+            if (!(TOKEN_AVAILABLE_BIT & xEventGroupGetBits(wifi_event_group))) {
                 // 如果沒有 token，則嘗試登入
                 xTaskNotifyGive(xServerLoginHandle);
             }
             vTaskSuspend(NULL);
-            break;
         } else {
             xEventGroupClearBits(wifi_event_group, SERVER_CONNECTED_BIT);
+            success_count = 0;
             failure_count++;
             ESP_LOGW(TAG, "Send failed, count: %d", failure_count);
 
             if (success_count >= 5) {
-                retry_delay_ms = 3 * 1000;
+                retry_delay_ms = 1000;
             } else if (failure_count == 1) {
                 event_t ev = {
                     .event_id = SCREEN_EVENT_CENTER,
                     .msg = "No server connection, retrying...",
                 };
                 xQueueSend(event_queue, &ev, portMAX_DELAY);
-                retry_delay_ms = 5 * 1000;
+                retry_delay_ms = 1 * 1000;
             } else if (failure_count < 6) {
-                retry_delay_ms = 5 * 1000;
+                retry_delay_ms = 1 * 1000;
             } else if (failure_count < 10) {
+                retry_delay_ms = 5 * 1000;
+            } else if (failure_count < 20) {
                 retry_delay_ms = 30 * 1000;
             } else {
                 retry_delay_ms = 5 * 60 * 1000;
@@ -269,36 +243,16 @@ void server_check_task(void *pvParameters) {
 
             ESP_LOGI(TAG, "Retrying after %lu ms", (unsigned long)retry_delay_ms);
         }
+        esp_http_client_cleanup(client);
     }
-
-    // TickType_t xLastWakeTime;
-    // const TickType_t xInterval = pdMS_TO_TICKS(60000); // 60秒
-
-    // xLastWakeTime = xTaskGetTickCount();
-
-    // for (;;) {
-    //     // 等待 60 秒或收到通知就立即執行
-    //     ulTaskNotifyTake(pdTRUE, xInterval);
-
-    //     ESP_LOGI(TAG, "Checking HTTP connectivity...");
-    //     if (!http_check_connectivity()) {
-    //         ESP_LOGE(TAG, "HTTP connectivity check failed.");
-    //         ESP_LOGI(TAG, "Switching to AP mode...");
-    //         xTaskNotify(xViewDisplayHandle, SCREEN_EVENT_WIFI_REQUIRED,
-    //         eSetValueWithoutOverwrite); if (!wifi_manager_is_ap_started()) {
-    //             wifi_manager_send_message(WM_ORDER_START_AP, NULL);
-    //         }
-    //     }
-    //     xLastWakeTime = xTaskGetTickCount();
-    // }
 }
 
 void netStartup(void *pvParameters) {
     wifi_manager_start();
     wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_connection_ok);
     wifi_manager_set_callback(WM_ORDER_START_AP, &cb_wifi_required);
-    xTaskCreate(server_check_task, "server_check_task", 4096, NULL, 2, &xServerCheckHandle);
-    xTaskCreate(server_login, "server_login", 4096, NULL, 2, &xServerLoginHandle);
+    xTaskCreate(server_check_task, "server_check_task", 4096, NULL, 5, &xServerCheckHandle);
+    xTaskCreate(server_login, "server_login", 4096, NULL, 5, &xServerLoginHandle);
     wifi_event_group = xEventGroupCreate();
     vTaskDelete(NULL);
 }

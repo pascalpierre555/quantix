@@ -13,6 +13,11 @@ void app_main() {
 
     ESP_ERROR_CHECK(nvs_flash_init());
 
+    event_queue = xQueueCreate(EVENT_QUEUE_LENGTH, EVENT_QUEUE_ITEM_SIZE);
+    if (event_queue == NULL) {
+        printf("Failed to create event_queue!\r\n");
+    }
+
     // 創建semaphore
     xScreen = xSemaphoreCreateBinary();
     if (xScreen != NULL) {

@@ -60,7 +60,8 @@
         "internet": "c",
         "socket": "c",
         "esp_event.h": "c",
-        "esp_wifi.h": "c"
+        "esp_wifi.h": "c",
+        "executor": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"

@@ -3,6 +3,7 @@
 #include "EPD_config.h"
 #include "GUI_Paint.h"
 #include "ImageData.h"
+#include "esp_log.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -30,7 +31,7 @@ void viewDisplay(void *PvParameters) {
     char displayStr[MAX_MSG_LEN] = "";
     for (;;) {
         if (xQueueReceive(event_queue, &event, portMAX_DELAY)) {
-
+            ESP_LOGI("UI_TASK", "Received event: %ld", event.event_id);
             switch (event.event_id) {
             case SCREEN_EVENT_WIFI_REQUIRED:
                 if ((view_current != SCREEN_EVENT_WIFI_REQUIRED) &&
@@ -118,7 +119,6 @@ void viewDisplay(void *PvParameters) {
 void screenStartup(void *pvParameters) {
     if (DEV_Module_Init() != 0) {
     }
-    event_queue = xQueueCreate(EVENT_QUEUE_LENGTH, EVENT_QUEUE_ITEM_SIZE);
     printf("e-Paper Init and Clear...\r\n");
 
     for (uint8_t i = 0; i < 10; i++) {
