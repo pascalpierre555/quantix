@@ -32,7 +32,7 @@ static char responseBuffer[512];
 TaskHandle_t xServerCheckHandle = NULL;
 TaskHandle_t xServerLoginHandle = NULL;
 
-EventGroupHandle_t wifi_event_group;
+EventGroupHandle_t net_event_group;
 
 // 定義 HTTP 事件處理函式
 esp_err_t _http_event_handler(esp_http_client_event_t *evt) { return ESP_OK; }
@@ -110,7 +110,7 @@ void server_login(void *pvParameter) {
     for (;;) {
         ulTaskNotifyTake(pdTRUE, token_expire_time / portTICK_PERIOD_MS); // 等待通知喚醒
         ESP_LOGI(TAG, "No token found. Logging in...");
-        xEventGroupClearBits(wifi_event_group, TOKEN_AVAILABLE_BIT);
+        xEventGroupClearBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
         esp_err_t err = esp_http_client_perform(client);
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "HTTP response: %s", responseBuffer);
@@ -125,13 +125,13 @@ void server_login(void *pvParameter) {
                 }
                 cJSON_Delete(root);
                 token_expire_time = 60 * 60 * 1000;
-                xEventGroupSetBits(wifi_event_group, TOKEN_AVAILABLE_BIT);
+                xEventGroupSetBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
             } else {
                 ESP_LOGE(TAG, "Failed to parse JSON: %s", responseBuffer);
             }
         } else {
             ESP_LOGE(TAG, "Login failed: %s", esp_err_to_name(err));
-            xEventGroupClearBits(wifi_event_group, SERVER_CONNECTED_BIT);
+            xEventGroupClearBits(net_event_group, NET_SERVER_CONNECTED_BIT);
             vTaskResume(xServerCheckHandle);     // 喚醒 server_check_task
             xTaskNotifyGive(xServerCheckHandle); // 喚醒 server_check_task
         }
@@ -147,7 +147,7 @@ void cb_connection_ok(void *pvParameter) {
     esp_ip4addr_ntoa(&param->ip_info.ip, str_ip, IP4ADDR_STRLEN_MAX);
 
     ESP_LOGI(TAG, "I have a connection and my IP is %s!", str_ip);
-    xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+    xEventGroupSetBits(net_event_group, NET_WIFI_CONNECTED_BIT);
     event_t ev = {
         .event_id = SCREEN_EVENT_CENTER,
         .msg = "WiFi connected:)",
@@ -187,7 +187,8 @@ void server_check_task(void *pvParameters) {
 
     for (;;) {
         ulTaskNotifyTake(pdTRUE, retry_delay_ms / portTICK_PERIOD_MS);
-        xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdFALSE, portMAX_DELAY);
+        xEventGroupWaitBits(net_event_group, NET_WIFI_CONNECTED_BIT, pdFALSE, pdFALSE,
+                            portMAX_DELAY);
 
         client = esp_http_client_init(&config);
         if (!client) {
@@ -200,20 +201,20 @@ void server_check_task(void *pvParameters) {
             success_count++;
             failure_count = 0;
             retry_delay_ms = 1000;
-            xEventGroupSetBits(wifi_event_group, SERVER_CONNECTED_BIT);
+            xEventGroupSetBits(net_event_group, NET_SERVER_CONNECTED_BIT);
             event_t ev = {
                 .event_id = SCREEN_EVENT_CENTER,
                 .msg = "Server connected successfully:)",
             };
             xQueueSend(event_queue, &ev, portMAX_DELAY);
             ESP_LOGI(TAG, "Server connected successfully, success count: %d", success_count);
-            if (!(TOKEN_AVAILABLE_BIT & xEventGroupGetBits(wifi_event_group))) {
+            if (!(NET_TOKEN_AVAILABLE_BIT & xEventGroupGetBits(net_event_group))) {
                 // 如果沒有 token，則嘗試登入
                 xTaskNotifyGive(xServerLoginHandle);
             }
             vTaskSuspend(NULL);
         } else {
-            xEventGroupClearBits(wifi_event_group, SERVER_CONNECTED_BIT);
+            xEventGroupClearBits(net_event_group, NET_SERVER_CONNECTED_BIT);
             success_count = 0;
             failure_count++;
             ESP_LOGW(TAG, "Send failed, count: %d", failure_count);
@@ -253,7 +254,7 @@ void netStartup(void *pvParameters) {
     wifi_manager_set_callback(WM_ORDER_START_AP, &cb_wifi_required);
     xTaskCreate(server_check_task, "server_check_task", 4096, NULL, 5, &xServerCheckHandle);
     xTaskCreate(server_login, "server_login", 4096, NULL, 5, &xServerLoginHandle);
-    wifi_event_group = xEventGroupCreate();
+    net_event_group = xEventGroupCreate();
     vTaskDelete(NULL);
 }
 

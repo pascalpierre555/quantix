@@ -10,11 +10,11 @@ typedef enum { NET_CHECK_OK, NET_CHECK_FAIL } net_check_result_t;
 
 extern TaskHandle_t xServerCheckHandle;
 
-extern EventGroupHandle_t wifi_event_group;
+extern EventGroupHandle_t net_event_group;
 
-#define WIFI_CONNECTED_BIT BIT0
-#define SERVER_CONNECTED_BIT BIT1
-#define TOKEN_AVAILABLE_BIT BIT2
+#define NET_WIFI_CONNECTED_BIT BIT0
+#define NET_SERVER_CONNECTED_BIT BIT1
+#define NET_TOKEN_AVAILABLE_BIT BIT2
 
 void netStartup(void *pvParameters);
 bool http_check_server_connectivity(esp_http_client_handle_t client);
