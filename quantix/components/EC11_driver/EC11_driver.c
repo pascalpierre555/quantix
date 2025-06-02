@@ -10,8 +10,6 @@ static const char *TAG = "Input";
 
 EventGroupHandle_t input_event_group;
 
-ec11_handler_t ec11_handler;
-
 typedef struct {
     volatile uint64_t last_button_time;
     volatile uint64_t last_encoder_time_a;
@@ -22,6 +20,8 @@ typedef struct {
     volatile uint8_t last_encoder_state_b;
     void (*button_callback)(void);
 } ec11_handler_t;
+
+ec11_handler_t ec11_handler;
 
 void ec11_init(ec11_handler_t *handler) {
     handler->last_button_time = 0;
@@ -68,6 +68,25 @@ void IRAM_ATTR encoder_isr_b(void *arg) {
     ec11_handler.last_encoder_time_b = now;
 }
 
+void ec11_task(void *pvParameters) {
+    ESP_LOGI(TAG, "EC11 task started.");
+    for (;;) {
+        if ((ec11_handler.last_encoder_state_a & 0x01) &&
+            (ec11_handler.last_encoder_state_b & 0x01)) {
+            ec11_handler.last_encoder_state_a = 0;
+            ec11_handler.last_encoder_state_b = 0;
+            if (ec11_handler.sec_last_encoder_time_a > ec11_handler.sec_last_encoder_time_b) {
+                xEventGroupSetBits(input_event_group, ENCODER_ROTATED_DIR_BIT);
+            } else if (ec11_handler.sec_last_encoder_time_b >
+                       ec11_handler.sec_last_encoder_time_a) {
+                xEventGroupClearBits(input_event_group, ENCODER_ROTATED_DIR_BIT);
+            }
+            xEventGroupSetBits(input_event_group, ENCODER_ROTATED_BIT);
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
 void setup_gpio(void) {
     ec11_init(&ec11_handler);
 
@@ -87,23 +106,4 @@ void setup_gpio(void) {
     gpio_isr_handler_add(PIN_ENCODER_A, encoder_isr_a, NULL);
     gpio_isr_handler_add(PIN_ENCODER_B, encoder_isr_b, NULL);
     xTaskCreate(ec11_task, "ec11_task", 2048, NULL, 5, NULL);
-}
-
-void ec11_task(void *pvParameters) {
-    ESP_LOGI(TAG, "EC11 task started.");
-    for (;;) {
-        if ((ec11_handler.last_encoder_state_a & 0x01) &&
-            (ec11_handler.last_encoder_state_b & 0x01)) {
-            ec11_handler.last_encoder_state_a = 0;
-            ec11_handler.last_encoder_state_b = 0;
-            if (ec11_handler.sec_last_encoder_time_a > ec11_handler.sec_last_encoder_time_b) {
-                xEventGroupSetBits(input_event_group, ENCODER_ROTATED_DIR_BIT);
-            } else if (ec11_handler.sec_last_encoder_time_b >
-                       ec11_handler.sec_last_encoder_time_a) {
-                xEventGroupClearBits(input_event_group, ENCODER_ROTATED_DIR_BIT);
-            }
-            xEventGroupSetBits(input_event_group, ENCODER_ROTATED_BIT);
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
 }

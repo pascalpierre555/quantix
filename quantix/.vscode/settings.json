@@ -61,7 +61,10 @@
         "socket": "c",
         "esp_event.h": "c",
         "esp_wifi.h": "c",
-        "executor": "c"
+        "executor": "c",
+        "fonts.h": "c",
+        "ec11_driver.h": "c",
+        "esp_timer.h": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"

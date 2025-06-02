@@ -1,6 +1,9 @@
 #ifndef __EC11_DRIVER_H
 #define __EC11_DRIVER_H
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+
 #define PIN_BUTTON 9
 #define PIN_ENCODER_A 10
 #define PIN_ENCODER_B 11

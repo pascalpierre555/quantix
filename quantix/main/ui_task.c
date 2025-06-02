@@ -115,17 +115,6 @@ void viewDisplay(void *PvParameters) {
     }
 }
 
-void waitForButtonInput(void *PvParameters) {
-    for (;;) {
-        EventBits_t bits = xEventGroupWaitBits(input_event_group, BUTTON_PRESSED_BIT | NOTIFY_BIT,
-                                               pdTRUE, // 清除 bits after exit
-                                               pdTRUE, // 等待所有 bits
-                                               portMAX_DELAY);
-        if (bits & BUTTON_PRESSED_BIT) {
-        }
-    }
-}
-
 void screenStartup(void *pvParameters) {
     if (DEV_Module_Init() != 0) {
     }
