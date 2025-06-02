@@ -10,6 +10,13 @@
 
 #define DEBOUNCE_TIME_US 1000
 
+#define BUTTON_PRESSED_BIT BIT0
+#define ENCODER_ROTATED_BIT BIT1
+#define ENCODER_ROTATED_DIR_BIT BIT2
+#define NOTIFY_BIT BIT3
+
+extern EventGroupHandle_t input_event_group;
+
 void setup_gpio(void);
 
 #endif

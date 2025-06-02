@@ -1,7 +1,7 @@
 /*****************************************************************************
 * | File      	:   ImageData.h
 * | Author      :   Waveshare team
-* | Function    :	
+* | Function    :
 *----------------
 * |	This version:   V1.0
 * | Date        :   2018-10-23
@@ -79,7 +79,6 @@ extern const unsigned char gImage_2in7b_Black_V2[5808];
 extern const unsigned char gImage_2in7b_Red_V2[5808];
 extern const unsigned char gImage_2in7_4Gray[];
 
-
 extern const unsigned char gImage_2in9[];
 extern const unsigned char gImage_2in9_4Gray[];
 extern const unsigned char gImage_2in9bc_b[];
@@ -97,16 +96,16 @@ extern const unsigned char gImage_2in66bb[];
 extern const unsigned char gImage_2in66br[];
 
 extern const unsigned char gImage_3in52[];
-extern const unsigned char gImage_3in7[]; //4 Gray
+extern const unsigned char gImage_3in7[]; // 4 Gray
 
 extern const unsigned char gImage_4in01[];
-	
+
 extern const unsigned char gImage_4in2[];
 extern const unsigned char gImage_4in2_4Gray[];
 extern const unsigned char gImage_4in2bc_b[];
 extern const unsigned char gImage_4in2bc_ry[];
 
-extern const unsigned char gImage_5in65f[];//192*143
+extern const unsigned char gImage_5in65f[]; // 192*143
 
 extern const unsigned char gImage_5in83[];
 extern const unsigned char gImage_5in83_V2[];
@@ -127,8 +126,8 @@ extern const unsigned char gImage_7in5_V2_ry[];
 // wifiqrcode.c
 
 extern const unsigned char gImage_wifiqrcode[];
+extern const unsigned char gImage_button[];
+extern const unsigned char gImage_arrow[];
 
 #endif
 /* FILE END */
-
-

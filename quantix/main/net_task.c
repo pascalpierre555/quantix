@@ -219,12 +219,9 @@ void server_check_task(void *pvParameters) {
             failure_count++;
             ESP_LOGW(TAG, "Send failed, count: %d", failure_count);
 
-            if (success_count >= 5) {
-                retry_delay_ms = 1000;
-            } else if (failure_count == 1) {
+            if (failure_count == 1) {
                 event_t ev = {
-                    .event_id = SCREEN_EVENT_CENTER,
-                    .msg = "No server connection, retrying...",
+                    .event_id = SCREEN_EVENT_NO_CONNECTION,
                 };
                 xQueueSend(event_queue, &ev, portMAX_DELAY);
                 retry_delay_ms = 1 * 1000;

@@ -1,4 +1,5 @@
 #include "ui_task.h"
+#include "EC11_driver.h"
 #include "EPD_2in9.h"
 #include "EPD_config.h"
 #include "GUI_Paint.h"
@@ -63,14 +64,12 @@ void viewDisplay(void *PvParameters) {
                     EPD_2IN9_V2_Clear();
                     Paint_SelectImage(BlackImage);
                     Paint_Clear(WHITE);
-
-                    Paint_DrawBitMap_Paste(gImage_wifiqrcode, 14, 14, 99, 99, 1);
-                    Paint_DrawRectangle(125, 25, 135 + Font16.Width * 14, 35 + Font16.Height * 2,
-                                        BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-                    Paint_DrawString_EN(130 + Font16.Width / 2, 30, " no internet", &Font16, WHITE,
-                                        BLACK);
-                    Paint_DrawString_EN(130 + Font16.Width * 4, 30 + Font16.Height, "access",
-                                        &Font16, WHITE, BLACK);
+                    Paint_DrawString_EN_Center(0, 0, EPD_2IN9_V2_HEIGHT, EPD_2IN9_V2_WIDTH,
+                                               "No server connection, retrying...", &Font16, WHITE,
+                                               BLACK, 5);
+                    Paint_DrawString_EN_Center(0, 81, EPD_2IN9_V2_HEIGHT, 47, "Wifi setting",
+                                               &Font12, BLACK, WHITE, 5);
+                    Paint_DrawBitMap_Paste(gImage_arrow, 85, 97, 12, 12, 1);
                     EPD_2IN9_V2_Display(BlackImage);
                     view_current = event.event_id;
                     EPD_2IN9_V2_Sleep();
@@ -112,6 +111,17 @@ void viewDisplay(void *PvParameters) {
             default:
                 break;
             }
+        }
+    }
+}
+
+void waitForButtonInput(void *PvParameters) {
+    for (;;) {
+        EventBits_t bits = xEventGroupWaitBits(input_event_group, BUTTON_PRESSED_BIT | NOTIFY_BIT,
+                                               pdTRUE, // 清除 bits after exit
+                                               pdTRUE, // 等待所有 bits
+                                               portMAX_DELAY);
+        if (bits & BUTTON_PRESSED_BIT) {
         }
     }
 }
