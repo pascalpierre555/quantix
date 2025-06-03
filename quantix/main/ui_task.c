@@ -4,6 +4,7 @@
 #include "EPD_config.h"
 #include "GUI_Paint.h"
 #include "ImageData.h"
+#include "calendar.h"
 #include "esp_log.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -22,7 +23,7 @@ UBYTE *BlackImage;
 TaskHandle_t xViewDisplayHandle = NULL;
 
 // 定義螢幕事件
-QueueHandle_t event_queue;
+QueueHandle_t gui_queue;
 
 void viewDisplay(void *PvParameters) {
     // 等待task被呼叫
@@ -31,7 +32,7 @@ void viewDisplay(void *PvParameters) {
     uint32_t view_current = 0;
     char displayStr[MAX_MSG_LEN] = "";
     for (;;) {
-        if (xQueueReceive(event_queue, &event, portMAX_DELAY)) {
+        if (xQueueReceive(gui_queue, &event, portMAX_DELAY)) {
             ESP_LOGI("UI_TASK", "Received event: %ld", event.event_id);
             switch (event.event_id) {
             case SCREEN_EVENT_WIFI_REQUIRED:
@@ -41,12 +42,12 @@ void viewDisplay(void *PvParameters) {
                     EPD_2IN9_V2_Clear();
                     Paint_SelectImage(BlackImage);
                     Paint_Clear(WHITE);
-
                     Paint_DrawBitMap_Paste(gImage_wifiqrcode, 14, 14, 99, 99, 1);
-                    Paint_DrawRectangle(125, 25, 135 + Font16.Width * 14, 35 + Font16.Height * 2,
-                                        BLACK, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-                    Paint_DrawString_EN(130, 30, " Scan QR code  to setup Wi-Fi", &Font16, WHITE,
-                                        BLACK);
+                    Paint_DrawString_EN_Center(130, 0, 166, 70, " Scan QR code to setup Wi-Fi",
+                                               &Font16, WHITE, BLACK, 5);
+                    Paint_DrawString_EN_Center(130, 70, 166, 58, "Continue without WiFi", &Font12,
+                                               BLACK, WHITE, 0);
+                    Paint_DrawBitMap_Paste(gImage_arrow, 128, 93, 12, 12, 1);
                     EPD_2IN9_V2_Display(BlackImage);
 
                     printf("Goto Sleep...\r\n");
@@ -69,7 +70,7 @@ void viewDisplay(void *PvParameters) {
                                                BLACK, 5);
                     Paint_DrawString_EN_Center(0, 81, EPD_2IN9_V2_HEIGHT, 47, "Wifi setting",
                                                &Font12, BLACK, WHITE, 5);
-                    Paint_DrawBitMap_Paste(gImage_arrow, 85, 97, 12, 12, 1);
+                    Paint_DrawBitMap_Paste(gImage_arrow, 90, 98, 12, 12, 1);
                     EPD_2IN9_V2_Display(BlackImage);
                     view_current = event.event_id;
                     EPD_2IN9_V2_Sleep();
@@ -101,6 +102,22 @@ void viewDisplay(void *PvParameters) {
                     EPD_2IN9_V2_Clear();
                     Paint_SelectImage(BlackImage);
                     Paint_Clear(WHITE);
+                    EPD_2IN9_V2_Display(BlackImage);
+                    view_current = event.event_id;
+                    EPD_2IN9_V2_Sleep();
+                    vTaskDelay(2000 / portTICK_PERIOD_MS);
+                    xSemaphoreGive(xScreen);
+                }
+                break;
+            case SCREEN_EVENT_CALENDAR:
+                if ((view_current != SCREEN_EVENT_CALENDAR) &&
+                    (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE)) {
+                    EPD_2IN9_V2_Init_Fast();
+                    EPD_2IN9_V2_Clear();
+                    Paint_SelectImage(BlackImage);
+                    Paint_Clear(WHITE);
+                    Paint_DrawString_EN(0, 0, day, &Font24, BLACK, WHITE);
+                    Paint_DrawString_EN(0, 24, month, &Font16, BLACK, WHITE);
                     EPD_2IN9_V2_Display(BlackImage);
                     view_current = event.event_id;
                     EPD_2IN9_V2_Sleep();

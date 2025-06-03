@@ -87,7 +87,7 @@ void ec11_task(void *pvParameters) {
     }
 }
 
-void setup_gpio(void) {
+void ec11Startup(void *pvParameters) {
     ec11_init(&ec11_handler);
 
     gpio_config_t io_conf = {.intr_type = GPIO_INTR_NEGEDGE,
@@ -106,4 +106,5 @@ void setup_gpio(void) {
     gpio_isr_handler_add(PIN_ENCODER_A, encoder_isr_a, NULL);
     gpio_isr_handler_add(PIN_ENCODER_B, encoder_isr_b, NULL);
     xTaskCreate(ec11_task, "ec11_task", 2048, NULL, 5, NULL);
+    vTaskDelete(NULL);
 }

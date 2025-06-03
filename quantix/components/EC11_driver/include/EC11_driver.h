@@ -20,6 +20,8 @@
 
 extern EventGroupHandle_t input_event_group;
 
-void setup_gpio(void);
+void ec11_set_button_callback(void (*cb)(void));
+void ec11_clean_button_callback(void);
+void ec11Startup(void *pvParameters);
 
 #endif

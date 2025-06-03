@@ -11,7 +11,7 @@
 
 extern SemaphoreHandle_t xScreen;
 extern TaskHandle_t xViewDisplayHandle;
-extern QueueHandle_t event_queue;
+extern QueueHandle_t gui_queue;
 
 // 定義螢幕顯示事件
 enum {
@@ -19,6 +19,7 @@ enum {
     SCREEN_EVENT_NO_CONNECTION = 2,
     SCREEN_EVENT_CENTER = 3,
     SCREEN_EVENT_CLEAR = 4,
+    SCREEN_EVENT_CALENDAR = 5,
 };
 
 typedef struct {

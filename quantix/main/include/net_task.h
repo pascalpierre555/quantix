@@ -15,6 +15,7 @@ extern EventGroupHandle_t net_event_group;
 #define NET_WIFI_CONNECTED_BIT BIT0
 #define NET_SERVER_CONNECTED_BIT BIT1
 #define NET_TOKEN_AVAILABLE_BIT BIT2
+#define NET_TIME_AVAILABLE_BIT BIT3
 
 void netStartup(void *pvParameters);
 bool http_check_server_connectivity(esp_http_client_handle_t client);

@@ -1,4 +1,5 @@
 #include "net_task.h"
+#include "EC11_driver.h"
 #include "JWT_storage.h"
 #include "cJSON.h"
 #include "esp_err.h"
@@ -56,6 +57,16 @@ esp_err_t login_event_handler(esp_http_client_event_t *evt) {
     }
 
     return ESP_OK;
+}
+
+void button_wifi_settings(void) {
+    ec11_clean_button_callback();
+    wifi_manager_send_message(WM_ORDER_START_AP, NULL);
+}
+
+void button_continue_without_wifi(void) {
+    ESP_LOGI(TAG, "Continuing without WiFi...");
+    ec11_clean_button_callback();
 }
 
 /**
@@ -152,7 +163,7 @@ void cb_connection_ok(void *pvParameter) {
         .event_id = SCREEN_EVENT_CENTER,
         .msg = "WiFi connected:)",
     };
-    xQueueSend(event_queue, &ev, portMAX_DELAY);
+    xQueueSend(gui_queue, &ev, portMAX_DELAY);
     xTaskNotifyGive(xServerCheckHandle); // 喚醒 server_check_task
 }
 
@@ -162,7 +173,8 @@ void cb_wifi_required(void *pvParameter) {
         .event_id = SCREEN_EVENT_WIFI_REQUIRED,
         .msg = "WiFi required, switching to AP mode",
     };
-    xQueueSend(event_queue, &ev, portMAX_DELAY);
+    xQueueSend(gui_queue, &ev, portMAX_DELAY);
+    ec11_set_button_callback(&button_continue_without_wifi);
 }
 
 /**
@@ -206,12 +218,16 @@ void server_check_task(void *pvParameters) {
                 .event_id = SCREEN_EVENT_CENTER,
                 .msg = "Server connected successfully:)",
             };
-            xQueueSend(event_queue, &ev, portMAX_DELAY);
+            xQueueSend(gui_queue, &ev, portMAX_DELAY);
             ESP_LOGI(TAG, "Server connected successfully, success count: %d", success_count);
             if (!(NET_TOKEN_AVAILABLE_BIT & xEventGroupGetBits(net_event_group))) {
                 // 如果沒有 token，則嘗試登入
                 xTaskNotifyGive(xServerLoginHandle);
             }
+            xEventGroupWaitBits(net_event_group, NET_TOKEN_AVAILABLE_BIT, pdFALSE, pdFALSE,
+                                portMAX_DELAY);
+
+            // 等待 token 可用
             vTaskSuspend(NULL);
         } else {
             xEventGroupClearBits(net_event_group, NET_SERVER_CONNECTED_BIT);
@@ -223,7 +239,8 @@ void server_check_task(void *pvParameters) {
                 event_t ev = {
                     .event_id = SCREEN_EVENT_NO_CONNECTION,
                 };
-                xQueueSend(event_queue, &ev, portMAX_DELAY);
+                xQueueSend(gui_queue, &ev, portMAX_DELAY);
+                ec11_set_button_callback(&button_wifi_settings);
                 retry_delay_ms = 1 * 1000;
             } else if (failure_count < 6) {
                 retry_delay_ms = 1 * 1000;

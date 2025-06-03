@@ -3,10 +3,30 @@ import jwt                       # 🔹 pyjwt 套件，用來產生/解析 token
 import datetime                  # 🔹 處理過期時間
 from functools import wraps     # 🔹 保留函式原名的裝飾器工具
 import finnhub
+import secrets
+import time
 
-finnhub_client = finnhub.Client(
-    api_key="d0lgrlpr01qhb028eq80d0lgrlpr01qhb028eq8g")
-print(finnhub_client.quote('AAPL'))
+
+def generate_session_token():
+    return secrets.token_urlsafe(32)  # 一個很難猜的 token
+
+
+# 暫存 session tokens：key = token, value = 到期時間
+session_tokens = {}
+
+
+def store_session_token(token, valid_seconds=300):
+    expires_at = time.time() + valid_seconds
+    session_tokens[token] = expires_at
+
+
+def is_token_valid(token):
+    if token in session_tokens:
+        if time.time() < session_tokens[token]:
+            return True
+        else:
+            del session_tokens[token]  # 過期就刪
+    return False
 
 
 app = Flask(__name__)
@@ -25,14 +45,31 @@ def login():
     data = request.json
     if not data or data.get('username') != USERNAME or data.get('password') != PASSWORD:
         return jsonify({'error': 'Invalid credentials'}), 401
-
-    print(data.get('username'), data.get('password'))
     token = jwt.encode({
         'user': data['username'],
         'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=60)
     }, SECRET_KEY, algorithm='HS256')
 
     return jsonify({'token': token})
+
+
+@app.route('/settings', methods=['POST'])
+def settings():
+    token = generate_session_token()
+    store_session_token(token)
+
+    auth_url = f"https://peng-pc.tail941dce.ts.net/oauth/setup?session_token={token}"
+    return jsonify({"auth_url": auth_url})
+
+
+@app.route('/oauth/setup')
+def oauth_setup():
+    token = request.args.get("session_token", "")
+    if not is_token_valid(token):
+        return "Invalid or expired session token.", 403
+
+    # 有效的話，就顯示 Google 授權頁面或 redirect
+    return "<h1>開始 Google 授權流程...</h1>"
 
 
 def token_required(f):
