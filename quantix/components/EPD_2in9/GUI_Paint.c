@@ -1085,3 +1085,23 @@ void Paint_DrawString_EN_Center(UWORD x_start, UWORD y_start, UWORD area_width, 
         y += font_height;
     }
 }
+
+void Paint_DrawBitMap_Paste_Scale(const unsigned char *image_buffer, UWORD Xstart, UWORD Ystart,
+                                  UWORD imageWidth, UWORD imageHeight, UBYTE flipColor, int scale) {
+    for (UWORD y = 0; y < imageHeight; y++) {
+        for (UWORD x = 0; x < imageWidth; x++) {
+            // 計算原始點陣圖的像素值
+            UWORD byte_index = (y * ((imageWidth + 7) / 8)) + (x / 8);
+            UBYTE bit = (image_buffer[byte_index] >> (7 - (x % 8))) & 0x01;
+            UBYTE color = flipColor ? !bit : bit;
+
+            // 放大3倍：將每個像素畫成3x3區塊
+            for (UWORD dy = 0; dy < scale; dy++) {
+                for (UWORD dx = 0; dx < scale; dx++) {
+                    Paint_SetPixel(Xstart + x * scale + dx, Ystart + y * scale + dy,
+                                   color ? BLACK : WHITE);
+                }
+            }
+        }
+    }
+}

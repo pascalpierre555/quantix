@@ -20,6 +20,7 @@ enum {
     SCREEN_EVENT_CENTER = 3,
     SCREEN_EVENT_CLEAR = 4,
     SCREEN_EVENT_CALENDAR = 5,
+    SCREEN_EVENT_QRCODE = 6,
 };
 
 typedef struct {
@@ -27,6 +28,7 @@ typedef struct {
     char msg[MAX_MSG_LEN];
 } event_t;
 
+void setting_qrcode_setting(char *qrcode);
 void screenStartup(void *pvParameters);
 void viewDisplay(void *PvParameters);
 

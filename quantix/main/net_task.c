@@ -2,10 +2,12 @@
 #include "EC11_driver.h"
 #include "JWT_storage.h"
 #include "cJSON.h"
+#include "calendar.h"
 #include "esp_err.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "mbedtls/base64.h"
 #include "ui_task.h"
 #include "wifi_manager.h"
 #include <arpa/inet.h>
@@ -15,6 +17,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "EPD_2in9.h"
+#include "EPD_config.h"
+#include "GUI_Paint.h"
+
 static const char *TAG = "NET_TASK";
 
 // 定義憑證檔案的路徑
@@ -22,25 +28,29 @@ extern const char isrgrootx1_pem_start[] asm("_binary_isrgrootx1_pem_start");
 extern const char isrgrootx1_pem_end[] asm("_binary_isrgrootx1_pem_end");
 
 static char responseBuffer[512];
+static char auth_header[256];
 
 // 定義登入 URL 和股票 API URL
 #define LOGIN_URL "https://peng-pc.tail941dce.ts.net/login"
 #define TEST_URL "https://peng-pc.tail941dce.ts.net/ping"
+#define SETTING_URL "https://peng-pc.tail941dce.ts.net/settings"
 // #define STOCK_URL "http://<your-server-ip>:5000/stock"
 #define MAX_BACKOFF_MS 15 * 60 * 1000 // 最大退避時間為 15 分鐘
 
 // 定義task handle
 TaskHandle_t xServerCheckHandle = NULL;
 TaskHandle_t xServerLoginHandle = NULL;
+TaskHandle_t xUserSettingsHandle = NULL;
 
 EventGroupHandle_t net_event_group;
+
+static int output_len = 0; // Stores number of bytes read
 
 // 定義 HTTP 事件處理函式
 esp_err_t _http_event_handler(esp_http_client_event_t *evt) { return ESP_OK; }
 
 // 定義登入事件處理函式
 esp_err_t login_event_handler(esp_http_client_event_t *evt) {
-    static int output_len = 0; // Stores number of bytes read
 
     switch (evt->event_id) {
     case HTTP_EVENT_ON_DATA:
@@ -226,7 +236,7 @@ void server_check_task(void *pvParameters) {
             }
             xEventGroupWaitBits(net_event_group, NET_TOKEN_AVAILABLE_BIT, pdFALSE, pdFALSE,
                                 portMAX_DELAY);
-
+            calendarInit();
             // 等待 token 可用
             vTaskSuspend(NULL);
         } else {
@@ -262,12 +272,73 @@ void server_check_task(void *pvParameters) {
     }
 }
 
+void userSettings(void *pvParameters) {
+    esp_http_client_config_t config = {
+        .url = SETTING_URL,
+        .event_handler = login_event_handler,
+        .timeout_ms = 3000,
+        .cert_pem = isrgrootx1_pem_start,
+        .method = HTTP_METHOD_POST,
+    };
+    memset(responseBuffer, 0, sizeof(responseBuffer));
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "Accept-Encoding", "identity");
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // 等待通知喚醒
+        ESP_LOGI(TAG, "Getting user setting url...");
+
+        char *token = jwt_load_from_nvs();
+        if (token) {
+            snprintf(auth_header, sizeof(auth_header), "Bearer %s", token);
+            esp_http_client_set_header(client, "Authorization", auth_header);
+            output_len = 0;
+            esp_err_t err = esp_http_client_perform(client);
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "HTTP response: %s", responseBuffer);
+                cJSON *root = cJSON_Parse(responseBuffer);
+                if (root) {
+                    cJSON *setting_item = cJSON_GetObjectItem(root, "qr_c_array_base64");
+                    if (setting_item && cJSON_IsString(setting_item)) {
+                        uint8_t buf[256];
+                        size_t olen = 0;
+                        const char *b64str = setting_item->valuestring; // 你的 base64 字串
+                        if (!mbedtls_base64_decode(buf, sizeof(buf), &olen,
+                                                   (const unsigned char *)b64str, strlen(b64str))) {
+                            ESP_LOGI(TAG, "Decoded base64 string successfully, length: %zu", olen);
+                            event_t ev = {
+                                .event_id = SCREEN_EVENT_QRCODE,
+                            };
+                            setting_qrcode_setting((char *)buf);
+                            xQueueSend(gui_queue, &ev, portMAX_DELAY);
+                        }
+                    } else {
+                        ESP_LOGE(TAG, "No qrcode in JSON response!");
+                    }
+                    cJSON_Delete(root);
+                    xEventGroupSetBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
+                } else {
+                    ESP_LOGE(TAG, "Failed to parse JSON: %s", responseBuffer);
+                }
+            } else {
+                ESP_LOGE(TAG, "failed: %s", esp_err_to_name(err));
+            }
+        } else {
+            ESP_LOGE(TAG, "No token found, skipping user settings fetch.");
+            xEventGroupClearBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
+            xTaskNotifyGive(xServerLoginHandle); // 喚醒 server_login
+        }
+    }
+    esp_http_client_cleanup(client);
+}
+
 void netStartup(void *pvParameters) {
     wifi_manager_start();
     wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_connection_ok);
     wifi_manager_set_callback(WM_ORDER_START_AP, &cb_wifi_required);
     xTaskCreate(server_check_task, "server_check_task", 4096, NULL, 5, &xServerCheckHandle);
     xTaskCreate(server_login, "server_login", 4096, NULL, 5, &xServerLoginHandle);
+    xTaskCreate(userSettings, "userSettings", 4096, NULL, 5, &xUserSettingsHandle);
     net_event_group = xEventGroupCreate();
     vTaskDelete(NULL);
 }

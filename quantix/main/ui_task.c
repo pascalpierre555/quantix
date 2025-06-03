@@ -25,6 +25,19 @@ TaskHandle_t xViewDisplayHandle = NULL;
 // 定義螢幕事件
 QueueHandle_t gui_queue;
 
+static const char *TAG = "UI_TASK";
+
+static char setting_qrcode[256];
+
+void setting_qrcode_setting(char *qrcode) {
+    if (qrcode != NULL && strlen(qrcode) < sizeof(setting_qrcode)) {
+        memcpy(setting_qrcode, qrcode, sizeof(setting_qrcode) - 1);
+        setting_qrcode[sizeof(setting_qrcode) - 1] = '\0'; // 確保字串結尾
+    } else {
+        ESP_LOGE(TAG, "Invalid QR code string");
+    }
+}
+
 void viewDisplay(void *PvParameters) {
     // 等待task被呼叫
     vTaskSuspend(NULL);
@@ -43,7 +56,7 @@ void viewDisplay(void *PvParameters) {
                     Paint_SelectImage(BlackImage);
                     Paint_Clear(WHITE);
                     Paint_DrawBitMap_Paste(gImage_wifiqrcode, 14, 14, 99, 99, 1);
-                    Paint_DrawString_EN_Center(130, 0, 166, 70, " Scan QR code to setup Wi-Fi",
+                    Paint_DrawString_EN_Center(130, 0, 166, 70, "Scan QR code to setup Wi-Fi",
                                                &Font16, WHITE, BLACK, 5);
                     Paint_DrawString_EN_Center(130, 70, 166, 58, "Continue without WiFi", &Font12,
                                                BLACK, WHITE, 0);
@@ -84,7 +97,7 @@ void viewDisplay(void *PvParameters) {
                     strncpy(displayStr, event.msg, sizeof(displayStr) - 1);
                     displayStr[sizeof(displayStr) - 1] = '\0';
                     EPD_2IN9_V2_Init_Fast();
-                    EPD_2IN9_V2_Clear();
+                    // EPD_2IN9_V2_Clear();
                     Paint_SelectImage(BlackImage);
                     Paint_Clear(WHITE);
                     Paint_DrawString_EN_Center(0, 0, EPD_2IN9_V2_HEIGHT, EPD_2IN9_V2_WIDTH,
@@ -118,6 +131,20 @@ void viewDisplay(void *PvParameters) {
                     Paint_Clear(WHITE);
                     Paint_DrawString_EN(0, 0, day, &Font24, BLACK, WHITE);
                     Paint_DrawString_EN(0, 24, month, &Font16, BLACK, WHITE);
+                    EPD_2IN9_V2_Display(BlackImage);
+                    view_current = event.event_id;
+                    EPD_2IN9_V2_Sleep();
+                    vTaskDelay(2000 / portTICK_PERIOD_MS);
+                    xSemaphoreGive(xScreen);
+                }
+                break;
+            case SCREEN_EVENT_QRCODE:
+                if ((view_current != SCREEN_EVENT_QRCODE) &&
+                    (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE)) {
+                    EPD_2IN9_V2_Init_Fast();
+                    Paint_SelectImage(BlackImage);
+                    Paint_Clear(WHITE);
+                    Paint_DrawBitMap_Paste_Scale((UBYTE *)setting_qrcode, 14, 14, 37, 37, 0, 3);
                     EPD_2IN9_V2_Display(BlackImage);
                     view_current = event.event_id;
                     EPD_2IN9_V2_Sleep();

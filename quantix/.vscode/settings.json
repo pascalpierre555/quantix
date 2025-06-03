@@ -64,7 +64,9 @@
         "executor": "c",
         "fonts.h": "c",
         "ec11_driver.h": "c",
-        "esp_timer.h": "c"
+        "esp_timer.h": "c",
+        "base64_internal.h": "c",
+        "esp_sntp.h": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"

@@ -224,5 +224,7 @@ void Paint_DrawBitMap_Paste(const unsigned char *image_buffer, UWORD Xstart, UWO
 // void Paint_DrawBitMap_OneQuarter(const unsigned char* image_buffer, UBYTE Region);
 // void Paint_DrawBitMap_OneEighth(const unsigned char* image_buffer, UBYTE Region);
 void Paint_DrawBitMap_Block(const unsigned char *image_buffer, UBYTE Region);
+void Paint_DrawBitMap_Paste_Scale(const unsigned char *image_buffer, UWORD Xstart, UWORD Ystart,
+                                  UWORD imageWidth, UWORD imageHeight, UBYTE flipColor, int scale);
 
 #endif

@@ -9,6 +9,8 @@
 typedef enum { NET_CHECK_OK, NET_CHECK_FAIL } net_check_result_t;
 
 extern TaskHandle_t xServerCheckHandle;
+extern TaskHandle_t xServerLoginHandle;
+extern TaskHandle_t xUserSettingsHandle;
 
 extern EventGroupHandle_t net_event_group;
 

@@ -2,7 +2,8 @@
 #define CALENDAR_H
 
 void get_today_date_string(char *buf, size_t buf_size);
-void ntpStartup(void *PvParameters);
+void ntpStartup(void *pvParameters);
+void calendarInit(void);
 
 extern char month[4]; // 用於存儲月份縮寫
 extern char year[5];  // 用於存儲年份

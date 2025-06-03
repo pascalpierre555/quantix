@@ -2,6 +2,7 @@
 #include "esp_sntp.h"
 #include "net_task.h"
 #include "nvs.h"
+#include "ui_task.h"
 #include <freertos/FreeRTOS.h>
 #include <stdio.h>
 #include <time.h>
@@ -37,7 +38,35 @@ void get_today_date_string(char *buf, size_t buf_size) {
     ESP_LOGW(TAG, "Failed to sync time");
 }
 
-void ntpStartup(void *PvParameters) {
+esp_err_t check_calendar_settings(void) {
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("calendar", NVS_READONLY, &nvs);
+    if (err != ESP_OK)
+        return err;
+
+    size_t buf_size;
+    err = nvs_get_str(nvs, "google_username", NULL, &buf_size);
+    if (err != ESP_OK) {
+        nvs_close(nvs);
+        return err;
+    }
+    return ESP_OK;
+}
+
+void calendarInit(void) {
+    if (check_calendar_settings() != ESP_OK) {
+        event_t ev = {
+            .event_id = SCREEN_EVENT_CENTER,
+            .msg = "No calendar settings found. Generating QR code for calendar setup...",
+        };
+        xQueueSend(gui_queue, &ev, portMAX_DELAY);
+        xTaskNotifyGive(xUserSettingsHandle);
+        ESP_LOGE(TAG, "Failed to read calendar settings");
+        return;
+    }
+}
+
+void ntpStartup(void *pvParameters) {
     xEventGroupWaitBits(net_event_group, NET_WIFI_CONNECTED_BIT, false, true, portMAX_DELAY);
 
     // 設定 NTP 伺服器
@@ -52,19 +81,4 @@ void ntpStartup(void *PvParameters) {
 
     xEventGroupSetBits(net_event_group, NET_TIME_AVAILABLE_BIT);
     vTaskDelete(NULL);
-}
-
-void CalenderInit(void *pvParemeters) {
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open("storage", NVS_READONLY, &nvs);
-    if (err != ESP_OK)
-        return err;
-    size_t username_buf_size;
-    err = nvs_get_str(nvs, "google_username", NULL, &username_buf_size);
-    if (err != ESP_OK) {
-        nvs_close(nvs);
-        return err;
-    }
-
-    size_t password_buf_size;
 }
