@@ -144,7 +144,11 @@ void viewDisplay(void *PvParameters) {
                     EPD_2IN9_V2_Init_Fast();
                     Paint_SelectImage(BlackImage);
                     Paint_Clear(WHITE);
-                    Paint_DrawBitMap_Paste_Scale((UBYTE *)setting_qrcode, 14, 14, 37, 37, 0, 3);
+                    Paint_DrawBitMap_Paste_Scale((UBYTE *)setting_qrcode, 14, 9, 37, 37, 0, 3);
+                    Paint_DrawString_EN_Center(130, 0, 166, 70,
+                                               "Scan QR code to enter user settings", &Font16,
+                                               WHITE, BLACK, 5);
+                    Paint_DrawString_EN_Center(130, 70, 166, 58, "Done", &Font12, BLACK, WHITE, 0);
                     EPD_2IN9_V2_Display(BlackImage);
                     view_current = event.event_id;
                     EPD_2IN9_V2_Sleep();

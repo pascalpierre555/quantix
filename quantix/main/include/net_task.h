@@ -25,4 +25,20 @@ void cb_connection_ok(void *pvParameter);
 void server_login(void *pvParameter);
 void statusCheck(void *pvParameters);
 
+typedef enum {
+    HTTP_CMD_LOGIN,
+    HTTP_CMD_SETTINGS,
+    HTTP_CMD_PING,
+    // ...可擴充
+} http_cmd_t;
+
+typedef struct {
+    http_cmd_t cmd;
+    char url[128];
+    char method[8]; // "GET" or "POST"
+    char body[256];
+    char auth_header[256];
+    TaskHandle_t notify_task; // 回傳時要通知哪個 task
+} http_task_msg_t;
+
 #endif // NET_TASK_H

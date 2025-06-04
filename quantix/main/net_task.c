@@ -28,7 +28,6 @@ extern const char isrgrootx1_pem_start[] asm("_binary_isrgrootx1_pem_start");
 extern const char isrgrootx1_pem_end[] asm("_binary_isrgrootx1_pem_end");
 
 static char responseBuffer[512];
-static char auth_header[256];
 
 // 定義登入 URL 和股票 API URL
 #define LOGIN_URL "https://peng-pc.tail941dce.ts.net/login"
@@ -77,6 +76,35 @@ void button_wifi_settings(void) {
 void button_continue_without_wifi(void) {
     ESP_LOGI(TAG, "Continuing without WiFi...");
     ec11_clean_button_callback();
+}
+
+void cb_button_setting_done(void) {
+    ec11_clean_button_callback();
+    esp_http_client_config_t config = {
+        .url = TEST_URL,
+        .event_handler = _http_event_handler,
+        .timeout_ms = 3000,
+        .cert_pem = isrgrootx1_pem_start,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    const char *post_data = "{\"username\":\"esp32\"}";
+    esp_http_client_set_post_field(client, post_data, strlen(post_data));
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "Accept-Encoding", "identity");
+    char *token = jwt_load_from_nvs();
+    output_len = 0; // Reset output length
+    static char auth_header[256];
+    if (token) {
+        snprintf(auth_header, sizeof(auth_header), "Bearer %s", token);
+        esp_http_client_set_header(client, "Authorization", auth_header);
+        output_len = 0;
+        esp_err_t err = esp_http_client_perform(client);
+        if (err == ESP_OK) {
+            esp_http_client_perform(client);
+            ESP_LOGI(TAG, "HTTP response: %s", responseBuffer);
+        }
+    }
+    esp_http_client_cleanup(client);
 }
 
 /**
@@ -289,6 +317,7 @@ void userSettings(void *pvParameters) {
         ESP_LOGI(TAG, "Getting user setting url...");
 
         char *token = jwt_load_from_nvs();
+        static char auth_header[256];
         if (token) {
             snprintf(auth_header, sizeof(auth_header), "Bearer %s", token);
             esp_http_client_set_header(client, "Authorization", auth_header);
@@ -311,6 +340,7 @@ void userSettings(void *pvParameters) {
                             };
                             setting_qrcode_setting((char *)buf);
                             xQueueSend(gui_queue, &ev, portMAX_DELAY);
+                            ec11_set_button_callback(&cb_button_setting_done);
                         }
                     } else {
                         ESP_LOGE(TAG, "No qrcode in JSON response!");
@@ -342,38 +372,3 @@ void netStartup(void *pvParameters) {
     net_event_group = xEventGroupCreate();
     vTaskDelete(NULL);
 }
-
-// void app_main(void) {
-//     char *token = jwt_load_from_nvs();
-//     if (!token) {
-//         server_login();
-//     }
-//
-// if (token) {
-//     ESP_LOGI(TAG, "Token: %s", token);
-//     esp_http_client_config_t config = {
-//         .url = STOCK_URL,
-//         .method = HTTP_METHOD_GET,
-//     };
-//     esp_http_client_handle_t client = esp_http_client_init(&config);
-
-//     char auth_header[512];
-//     snprintf(auth_header, sizeof(auth_header), "Bearer %s", token);
-//     esp_http_client_set_header(client, "Authorization", auth_header);
-
-//     esp_err_t err = esp_http_client_perform(client);
-//     if (err == ESP_OK) {
-//         int len = esp_http_client_get_content_length(client);
-//         char *buf = malloc(len + 1);
-//         esp_http_client_read(client, buf, len);
-//         buf[len] = '\0';
-
-//         ESP_LOGI(TAG, "Stock result: %s", buf);
-//         free(buf);
-//     } else {
-//         ESP_LOGE(TAG, "Stock fetch failed: %s", esp_err_to_name(err));
-//     }
-//     esp_http_client_cleanup(client);
-// }
-//     free(token);
-// }
