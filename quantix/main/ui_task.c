@@ -51,13 +51,14 @@ void viewDisplay(void *PvParameters) {
             case SCREEN_EVENT_WIFI_REQUIRED:
                 if ((view_current != SCREEN_EVENT_WIFI_REQUIRED) &&
                     (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE)) {
+                    strncpy(displayStr, "Scan QR code to setup Wi-Fi", sizeof(displayStr) - 1);
                     EPD_2IN9_V2_Init_Fast();
                     EPD_2IN9_V2_Clear();
                     Paint_SelectImage(BlackImage);
                     Paint_Clear(WHITE);
                     Paint_DrawBitMap_Paste(gImage_wifiqrcode, 14, 14, 99, 99, 1);
-                    Paint_DrawString_EN_Center(130, 0, 166, 70, "Scan QR code to setup Wi-Fi",
-                                               &Font16, WHITE, BLACK, 5);
+                    Paint_DrawString_EN_Center(130, 0, 166, 70, displayStr, &Font16, WHITE, BLACK,
+                                               5);
                     Paint_DrawString_EN_Center(130, 70, 166, 58, "Continue without WiFi", &Font12,
                                                BLACK, WHITE, 0);
                     Paint_DrawBitMap_Paste(gImage_arrow, 128, 93, 12, 12, 1);
@@ -74,13 +75,14 @@ void viewDisplay(void *PvParameters) {
             case SCREEN_EVENT_NO_CONNECTION:
                 if ((view_current != SCREEN_EVENT_NO_CONNECTION) &&
                     (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE)) {
+                    strncpy(displayStr, "No server connection, retrying...",
+                            sizeof(displayStr) - 1);
                     EPD_2IN9_V2_Init_Fast();
                     EPD_2IN9_V2_Clear();
                     Paint_SelectImage(BlackImage);
                     Paint_Clear(WHITE);
                     Paint_DrawString_EN_Center(0, 0, EPD_2IN9_V2_HEIGHT, EPD_2IN9_V2_WIDTH,
-                                               "No server connection, retrying...", &Font16, WHITE,
-                                               BLACK, 5);
+                                               displayStr, &Font16, WHITE, BLACK, 5);
                     Paint_DrawString_EN_Center(0, 81, EPD_2IN9_V2_HEIGHT, 47, "Wifi setting",
                                                &Font12, BLACK, WHITE, 5);
                     Paint_DrawBitMap_Paste(gImage_arrow, 90, 98, 12, 12, 1);
@@ -111,6 +113,7 @@ void viewDisplay(void *PvParameters) {
                 break;
             case SCREEN_EVENT_CLEAR:
                 if (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE) {
+                    displayStr[0] = '\0'; // 清空顯示字串
                     EPD_2IN9_V2_Init();
                     EPD_2IN9_V2_Clear();
                     Paint_SelectImage(BlackImage);
@@ -125,6 +128,7 @@ void viewDisplay(void *PvParameters) {
             case SCREEN_EVENT_CALENDAR:
                 if ((view_current != SCREEN_EVENT_CALENDAR) &&
                     (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE)) {
+                    displayStr[0] = '\0'; // 清空顯示字串
                     EPD_2IN9_V2_Init_Fast();
                     EPD_2IN9_V2_Clear();
                     Paint_SelectImage(BlackImage);
@@ -141,13 +145,14 @@ void viewDisplay(void *PvParameters) {
             case SCREEN_EVENT_QRCODE:
                 if ((view_current != SCREEN_EVENT_QRCODE) &&
                     (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE)) {
+                    strncpy(displayStr, "Scan QR code to enter user settings",
+                            sizeof(displayStr) - 1);
                     EPD_2IN9_V2_Init_Fast();
                     Paint_SelectImage(BlackImage);
                     Paint_Clear(WHITE);
                     Paint_DrawBitMap_Paste_Scale((UBYTE *)setting_qrcode, 14, 9, 37, 37, 0, 3);
-                    Paint_DrawString_EN_Center(130, 0, 166, 70,
-                                               "Scan QR code to enter user settings", &Font16,
-                                               WHITE, BLACK, 5);
+                    Paint_DrawString_EN_Center(130, 0, 166, 70, displayStr, &Font16, WHITE, BLACK,
+                                               5);
                     Paint_DrawString_EN_Center(130, 70, 166, 58, "Done", &Font12, BLACK, WHITE, 0);
                     EPD_2IN9_V2_Display(BlackImage);
                     view_current = event.event_id;

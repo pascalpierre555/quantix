@@ -45,7 +45,7 @@ esp_err_t check_calendar_settings(void) {
         return err;
 
     size_t buf_size;
-    err = nvs_get_str(nvs, "google_username", NULL, &buf_size);
+    err = nvs_get_str(nvs, "email", NULL, &buf_size);
     if (err != ESP_OK) {
         nvs_close(nvs);
         return err;

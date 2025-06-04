@@ -1,5 +1,8 @@
 #include "net_task.h"
 #include "EC11_driver.h"
+#include "EPD_2in9.h"
+#include "EPD_config.h"
+#include "GUI_Paint.h"
 #include "JWT_storage.h"
 #include "cJSON.h"
 #include "calendar.h"
@@ -14,12 +17,9 @@
 #include <esp_netif.h>
 #include <esp_wifi.h>
 #include <freertos/event_groups.h>
+#include <nvs.h>
 #include <stdio.h>
 #include <string.h>
-
-#include "EPD_2in9.h"
-#include "EPD_config.h"
-#include "GUI_Paint.h"
 
 static const char *TAG = "NET_TASK";
 
@@ -33,6 +33,7 @@ static char responseBuffer[512];
 #define LOGIN_URL "https://peng-pc.tail941dce.ts.net/login"
 #define TEST_URL "https://peng-pc.tail941dce.ts.net/ping"
 #define SETTING_URL "https://peng-pc.tail941dce.ts.net/settings"
+#define CHECK_AUTH_RESULT_URL "https://peng-pc.tail941dce.ts.net/check_auth_result?username=esp32"
 // #define STOCK_URL "http://<your-server-ip>:5000/stock"
 #define MAX_BACKOFF_MS 15 * 60 * 1000 // 最大退避時間為 15 分鐘
 
@@ -40,6 +41,7 @@ static char responseBuffer[512];
 TaskHandle_t xServerCheckHandle = NULL;
 TaskHandle_t xServerLoginHandle = NULL;
 TaskHandle_t xUserSettingsHandle = NULL;
+TaskHandle_t xEspCheckAuthResultHandle = NULL;
 
 EventGroupHandle_t net_event_group;
 
@@ -68,40 +70,101 @@ esp_err_t login_event_handler(esp_http_client_event_t *evt) {
     return ESP_OK;
 }
 
-void button_wifi_settings(void) {
+bool http_response_save_to_nvs(cJSON *root, char *key) {
+    if (root && key) {
+        cJSON *item = cJSON_GetObjectItem(root, key);
+        if (item && cJSON_IsString(item)) {
+            // 儲存到 NVS
+            nvs_handle_t nvs;
+            esp_err_t err = nvs_open("http_response", NVS_READWRITE, &nvs);
+            if (err == ESP_OK) {
+                nvs_set_str(nvs, key, item->valuestring);
+                nvs_commit(nvs);
+                nvs_close(nvs);
+                ESP_LOGI(TAG, "Saved %s to NVS: %s", key, item->valuestring);
+            } else {
+                ESP_LOGE(TAG, "Failed to open NVS for %s: %s", key, esp_err_to_name(err));
+                return 1;
+            }
+        } else {
+            ESP_LOGE(TAG, "No valid item found for key: %s", key);
+            return 1;
+        }
+    } else {
+        ESP_LOGE(TAG, "Invalid parameters: %s", key);
+        return 1;
+    }
+    return 0;
+}
+
+void cb_button_wifi_settings(void) {
     ec11_clean_button_callback();
     wifi_manager_send_message(WM_ORDER_START_AP, NULL);
 }
 
-void button_continue_without_wifi(void) {
+void cb_button_continue_without_wifi(void) {
     ESP_LOGI(TAG, "Continuing without WiFi...");
     ec11_clean_button_callback();
 }
 
 void cb_button_setting_done(void) {
     ec11_clean_button_callback();
+    vTaskNotifyGiveFromISR(xEspCheckAuthResultHandle, NULL);
+}
+
+void esp_check_auth_result(void *pvParameters) {
     esp_http_client_config_t config = {
-        .url = TEST_URL,
-        .event_handler = _http_event_handler,
+        .url = CHECK_AUTH_RESULT_URL,
+        .event_handler = login_event_handler,
         .timeout_ms = 3000,
         .cert_pem = isrgrootx1_pem_start,
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    const char *post_data = "{\"username\":\"esp32\"}";
-    esp_http_client_set_post_field(client, post_data, strlen(post_data));
     esp_http_client_set_header(client, "Content-Type", "application/json");
     esp_http_client_set_header(client, "Accept-Encoding", "identity");
-    char *token = jwt_load_from_nvs();
-    output_len = 0; // Reset output length
-    static char auth_header[256];
-    if (token) {
-        snprintf(auth_header, sizeof(auth_header), "Bearer %s", token);
-        esp_http_client_set_header(client, "Authorization", auth_header);
-        output_len = 0;
-        esp_err_t err = esp_http_client_perform(client);
-        if (err == ESP_OK) {
-            esp_http_client_perform(client);
-            ESP_LOGI(TAG, "HTTP response: %s", responseBuffer);
+    event_t ev = {
+        .event_id = SCREEN_EVENT_CENTER,
+        .msg = "Please try again, status: ",
+    };
+    event_t evqr = {
+        .event_id = SCREEN_EVENT_QRCODE,
+    };
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // 等待通知喚醒
+        char *token = jwt_load_from_nvs();
+        output_len = 0; // Reset output length
+        static char auth_header[256];
+        if (token) {
+            snprintf(auth_header, sizeof(auth_header), "Bearer %s", token);
+            esp_http_client_set_header(client, "Authorization", auth_header);
+            output_len = 0;
+            esp_err_t err = esp_http_client_perform(client);
+            if (err == ESP_OK) {
+                cJSON *root = cJSON_Parse(responseBuffer);
+                if (root) {
+                    ESP_LOGI(TAG, "HTTP response: %s", responseBuffer);
+                    if (http_response_save_to_nvs(root, "email")) {
+                        cJSON *item = cJSON_GetObjectItem(root, "status");
+                        char *status = cJSON_GetStringValue(item);
+                        if (status) {
+                            ESP_LOGI(TAG, "Status: %s", status);
+                            ev.msg[26] = '\0'; // 確保字串結尾
+                            strncat(ev.msg, status, MAX_MSG_LEN - strlen(ev.msg) - 1);
+                            xQueueSend(gui_queue, &ev, portMAX_DELAY);
+                            xSemaphoreTake(xScreen, portMAX_DELAY);
+                            ec11_set_button_callback(&cb_button_setting_done);
+                            xSemaphoreGive(xScreen);
+                            xQueueSend(gui_queue, &evqr, portMAX_DELAY);
+                        }
+                    } else {
+                        http_response_save_to_nvs(root, "access_token");
+                        http_response_save_to_nvs(root, "refresh_token");
+                    }
+                } else {
+                    ESP_LOGE(TAG, "Failed to parse JSON: %s", responseBuffer);
+                }
+                cJSON_Delete(root);
+            }
         }
     }
     esp_http_client_cleanup(client);
@@ -176,6 +239,7 @@ void server_login(void *pvParameter) {
                 token_expire_time = 60 * 60 * 1000;
                 xEventGroupSetBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
             } else {
+                token_expire_time = 500;
                 ESP_LOGE(TAG, "Failed to parse JSON: %s", responseBuffer);
             }
         } else {
@@ -212,7 +276,7 @@ void cb_wifi_required(void *pvParameter) {
         .msg = "WiFi required, switching to AP mode",
     };
     xQueueSend(gui_queue, &ev, portMAX_DELAY);
-    ec11_set_button_callback(&button_continue_without_wifi);
+    ec11_set_button_callback(&cb_button_continue_without_wifi);
 }
 
 /**
@@ -251,6 +315,12 @@ void server_check_task(void *pvParameters) {
             success_count++;
             failure_count = 0;
             retry_delay_ms = 1000;
+            if (!(NET_TOKEN_AVAILABLE_BIT & xEventGroupGetBits(net_event_group))) {
+                // 如果沒有 token，則嘗試登入
+                xTaskNotifyGive(xServerLoginHandle);
+            }
+            xEventGroupWaitBits(net_event_group, NET_TOKEN_AVAILABLE_BIT, pdFALSE, pdFALSE,
+                                portMAX_DELAY);
             xEventGroupSetBits(net_event_group, NET_SERVER_CONNECTED_BIT);
             event_t ev = {
                 .event_id = SCREEN_EVENT_CENTER,
@@ -258,12 +328,6 @@ void server_check_task(void *pvParameters) {
             };
             xQueueSend(gui_queue, &ev, portMAX_DELAY);
             ESP_LOGI(TAG, "Server connected successfully, success count: %d", success_count);
-            if (!(NET_TOKEN_AVAILABLE_BIT & xEventGroupGetBits(net_event_group))) {
-                // 如果沒有 token，則嘗試登入
-                xTaskNotifyGive(xServerLoginHandle);
-            }
-            xEventGroupWaitBits(net_event_group, NET_TOKEN_AVAILABLE_BIT, pdFALSE, pdFALSE,
-                                portMAX_DELAY);
             calendarInit();
             // 等待 token 可用
             vTaskSuspend(NULL);
@@ -278,7 +342,7 @@ void server_check_task(void *pvParameters) {
                     .event_id = SCREEN_EVENT_NO_CONNECTION,
                 };
                 xQueueSend(gui_queue, &ev, portMAX_DELAY);
-                ec11_set_button_callback(&button_wifi_settings);
+                ec11_set_button_callback(&cb_button_wifi_settings);
                 retry_delay_ms = 1 * 1000;
             } else if (failure_count < 6) {
                 retry_delay_ms = 1 * 1000;
@@ -334,12 +398,17 @@ void userSettings(void *pvParameters) {
                         const char *b64str = setting_item->valuestring; // 你的 base64 字串
                         if (!mbedtls_base64_decode(buf, sizeof(buf), &olen,
                                                    (const unsigned char *)b64str, strlen(b64str))) {
+
+                            // 成功獲取session token
                             ESP_LOGI(TAG, "Decoded base64 string successfully, length: %zu", olen);
                             event_t ev = {
                                 .event_id = SCREEN_EVENT_QRCODE,
                             };
                             setting_qrcode_setting((char *)buf);
                             xQueueSend(gui_queue, &ev, portMAX_DELAY);
+                            UBaseType_t stack_remain =
+                                uxTaskGetStackHighWaterMark(NULL); // NULL 代表查詢目前 task
+                            ESP_LOGI("TASK", "Stack high water mark: %u words", stack_remain);
                             ec11_set_button_callback(&cb_button_setting_done);
                         }
                     } else {
@@ -368,7 +437,9 @@ void netStartup(void *pvParameters) {
     wifi_manager_set_callback(WM_ORDER_START_AP, &cb_wifi_required);
     xTaskCreate(server_check_task, "server_check_task", 4096, NULL, 5, &xServerCheckHandle);
     xTaskCreate(server_login, "server_login", 4096, NULL, 5, &xServerLoginHandle);
-    xTaskCreate(userSettings, "userSettings", 4096, NULL, 5, &xUserSettingsHandle);
+    xTaskCreate(userSettings, "userSettings", 8192, NULL, 5, &xUserSettingsHandle);
+    xTaskCreate(esp_check_auth_result, "esp_check_auth_result", 4096, NULL, 5,
+                &xEspCheckAuthResultHandle);
     net_event_group = xEventGroupCreate();
     vTaskDelete(NULL);
 }

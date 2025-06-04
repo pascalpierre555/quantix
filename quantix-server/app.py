@@ -69,8 +69,8 @@ app = Flask(__name__)
 
 load_dotenv()
 SECRET_KEY = os.getenv('SECRET_KEY')
-USERNAME = os.getenv('USERNAME')
-PASSWORD = os.getenv('PASSWORD')
+QUANTIX_USERNAME = os.getenv('QUANTIX_USERNAME')
+QUANTIX_PASSWORD = os.getenv('QUANTIX_PASSWORD')
 
 
 def token_required(f):
@@ -101,12 +101,12 @@ def ping():
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
-    if not data or data.get('username') != USERNAME or data.get('password') != PASSWORD:
+    if not data or data.get('username') != os.getenv('QUANTIX_USERNAME') or data.get('password') != os.getenv('QUANTIX_PASSWORD'):
         return jsonify({'error': 'Invalid credentials'}), 401
     token = jwt.encode({
         'user': data['username'],
         'exp': datetime.datetime.utcnow() + datetime.timedelta(minutes=60)
-    }, SECRET_KEY, algorithm='HS256')
+    }, os.getenv('SECRET_KEY'), algorithm='HS256')
     # 註冊 user
     if data['username'] not in authorized_users:
         authorized_users[data['username']] = {}
@@ -218,6 +218,7 @@ def oauth_callback():
 def check_result():
     username = request.args.get('username')
     if not username or username not in authorized_users:
+        print(f"Unauthorized access attempt by {username}")
         return jsonify({"status": "not_found"})
     google_info = authorized_users[username].get('google')
     if google_info:
