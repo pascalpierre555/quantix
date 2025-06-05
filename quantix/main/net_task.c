@@ -51,7 +51,7 @@ static int output_len = 0; // Stores number of bytes read
 esp_err_t _http_event_handler(esp_http_client_event_t *evt) { return ESP_OK; }
 
 // 定義登入事件處理函式
-esp_err_t login_event_handler(esp_http_client_event_t *evt) {
+esp_err_t get_response_event_handler(esp_http_client_event_t *evt) {
 
     switch (evt->event_id) {
     case HTTP_EVENT_ON_DATA:
@@ -115,7 +115,7 @@ void cb_button_setting_done(void) {
 void esp_check_auth_result(void *pvParameters) {
     esp_http_client_config_t config = {
         .url = CHECK_AUTH_RESULT_URL,
-        .event_handler = login_event_handler,
+        .event_handler = get_response_event_handler,
         .timeout_ms = 3000,
         .cert_pem = isrgrootx1_pem_start,
     };
@@ -209,7 +209,7 @@ void server_login(void *pvParameter) {
         .username = "esp32",
         .password = "supersecret",
         .url = LOGIN_URL,
-        .event_handler = login_event_handler,
+        .event_handler = get_response_event_handler,
         .timeout_ms = 3000,
         .cert_pem = isrgrootx1_pem_start,
         .method = HTTP_METHOD_POST,
@@ -369,7 +369,7 @@ void server_check_task(void *pvParameters) {
 void userSettings(void *pvParameters) {
     esp_http_client_config_t config = {
         .url = SETTING_URL,
-        .event_handler = login_event_handler,
+        .event_handler = get_response_event_handler,
         .timeout_ms = 3000,
         .cert_pem = isrgrootx1_pem_start,
         .method = HTTP_METHOD_POST,

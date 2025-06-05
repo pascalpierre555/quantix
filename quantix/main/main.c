@@ -2,6 +2,7 @@
 #include "calendar.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "font_task.h"
 #include "net_task.h"
 #include "nvs_flash.h"
 #include "ui_task.h"
@@ -11,9 +12,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "EPD_2in9.h"
-#include "EPD_config.h"
-#include "GUI_Paint.h"
 void app_main() {
 
     esp_err_t ret = nvs_flash_init();

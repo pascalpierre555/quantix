@@ -67,7 +67,11 @@
         "esp_timer.h": "c",
         "base64_internal.h": "c",
         "esp_sntp.h": "c",
-        "compare": "c"
+        "compare": "c",
+        "font_task.h": "c",
+        "unity.h": "c",
+        "esp_littlefs.h": "c",
+        "dirent.h": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"
