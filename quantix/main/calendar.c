@@ -13,6 +13,8 @@ char year[5] = {0};  // 用於存儲年份
 char month[4] = {0}; // 用於存儲月份縮寫
 char day[3] = {0};   // 用於存儲日期
 
+TaskHandle_t xcalendarStartupHandle = NULL;
+
 void get_today_date_string(char *buf, size_t buf_size) {
     time_t now;
     struct tm timeinfo;
@@ -53,16 +55,20 @@ esp_err_t check_calendar_settings(void) {
     return ESP_OK;
 }
 
-void calendarInit(void) {
-    if (check_calendar_settings() != ESP_OK) {
-        event_t ev = {
-            .event_id = SCREEN_EVENT_CENTER,
-            .msg = "No calendar settings found. Generating QR code for calendar setup...",
-        };
-        xQueueSend(gui_queue, &ev, portMAX_DELAY);
-        xTaskNotifyGive(xUserSettingsHandle);
-        ESP_LOGE(TAG, "Failed to read calendar settings");
-        return;
+void calendarStartup(void *pvParameters) {
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // 等待通知喚醒
+        if (check_calendar_settings() != ESP_OK) {
+            event_t ev = {
+                .event_id = SCREEN_EVENT_CENTER,
+                .msg = "No calendar settings found. Generating QR code for calendar setup...",
+            };
+            xQueueSend(gui_queue, &ev, portMAX_DELAY);
+            xTaskNotifyGive(xUserSettingsHandle);
+            ESP_LOGE(TAG, "Failed to read calendar settings");
+        } else {
+            ESP_LOGI(TAG, "Calendar settings found, proceeding with calendar initialization.");
+        }
     }
 }
 

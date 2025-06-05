@@ -11,6 +11,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "EPD_2in9.h"
+#include "EPD_config.h"
+#include "GUI_Paint.h"
 void app_main() {
 
     esp_err_t ret = nvs_flash_init();
@@ -39,5 +42,6 @@ void app_main() {
     xTaskCreate(netStartup, "netStartup", 4096, NULL, 5, NULL);
     xTaskCreate(ec11Startup, "ec11Startup", 4096, NULL, 5, NULL);
     xTaskCreate(ntpStartup, "ntpStartup", 4096, NULL, 5, NULL);
+    xTaskCreate(calendarStartup, "calendarStartup", 4096, NULL, 5, &xcalendarStartupHandle);
     ESP_LOGI("APP_MAIN", "All tasks created");
 }

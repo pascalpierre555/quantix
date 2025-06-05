@@ -627,10 +627,10 @@ void Paint_DrawString_CN(UWORD Xstart, UWORD Ystart, const char *pString, cFONT 
 
     /* Send the string character by character on EPD */
     while (*p_text != 0) {
-        if (*p_text <= 0x7F) { // ASCII < 126
+        if ((unsigned char)*p_text <= 0x7F) { // ASCII
             for (Num = 0; Num < font->size; Num++) {
                 if (*p_text == font->table[Num].index[0]) {
-                    const char *ptr = &font->table[Num].matrix[0];
+                    const unsigned char *ptr = font->table[Num].matrix;
 
                     for (j = 0; j < font->Height; j++) {
                         for (i = 0; i < font->Width; i++) {
@@ -667,11 +667,10 @@ void Paint_DrawString_CN(UWORD Xstart, UWORD Ystart, const char *pString, cFONT 
             p_text += 1;
             /* Decrement the column position by 16 */
             x += font->ASCII_Width;
-        } else { // Chinese
+        } else { // 中文（UTF-8，最多3 bytes）
             for (Num = 0; Num < font->size; Num++) {
-                if ((*p_text == font->table[Num].index[0]) &&
-                    (*(p_text + 1) == font->table[Num].index[1])) {
-                    const char *ptr = &font->table[Num].matrix[0];
+                if (strncmp(p_text, font->table[Num].index, 3) == 0) {
+                    const unsigned char *ptr = font->table[Num].matrix;
 
                     for (j = 0; j < font->Height; j++) {
                         for (i = 0; i < font->Width; i++) {
@@ -704,9 +703,18 @@ void Paint_DrawString_CN(UWORD Xstart, UWORD Ystart, const char *pString, cFONT 
                     break;
                 }
             }
-            /* Point on the next character */
-            p_text += 2;
-            /* Decrement the column position by 16 */
+            // 這裡修正
+            unsigned char c = (unsigned char)*p_text;
+            int utf8_len = 0;
+            if (c >= 0xF0)
+                utf8_len = 4;
+            else if (c >= 0xE0)
+                utf8_len = 3;
+            else if (c >= 0xC0)
+                utf8_len = 2;
+            else
+                utf8_len = 1;
+            p_text += utf8_len;
             x += font->Width;
         }
     }

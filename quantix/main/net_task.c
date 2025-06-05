@@ -70,13 +70,13 @@ esp_err_t login_event_handler(esp_http_client_event_t *evt) {
     return ESP_OK;
 }
 
-bool http_response_save_to_nvs(cJSON *root, char *key) {
+bool http_response_save_to_nvs(cJSON *root, char *nvs_name, char *key) {
     if (root && key) {
         cJSON *item = cJSON_GetObjectItem(root, key);
         if (item && cJSON_IsString(item)) {
             // 儲存到 NVS
             nvs_handle_t nvs;
-            esp_err_t err = nvs_open("http_response", NVS_READWRITE, &nvs);
+            esp_err_t err = nvs_open(nvs_name, NVS_READWRITE, &nvs);
             if (err == ESP_OK) {
                 nvs_set_str(nvs, key, item->valuestring);
                 nvs_commit(nvs);
@@ -143,7 +143,7 @@ void esp_check_auth_result(void *pvParameters) {
                 cJSON *root = cJSON_Parse(responseBuffer);
                 if (root) {
                     ESP_LOGI(TAG, "HTTP response: %s", responseBuffer);
-                    if (http_response_save_to_nvs(root, "email")) {
+                    if (http_response_save_to_nvs(root, "calendar", "email")) {
                         cJSON *item = cJSON_GetObjectItem(root, "status");
                         char *status = cJSON_GetStringValue(item);
                         if (status) {
@@ -157,8 +157,9 @@ void esp_check_auth_result(void *pvParameters) {
                             xQueueSend(gui_queue, &evqr, portMAX_DELAY);
                         }
                     } else {
-                        http_response_save_to_nvs(root, "access_token");
-                        http_response_save_to_nvs(root, "refresh_token");
+                        http_response_save_to_nvs(root, "calendar", "access_token");
+                        http_response_save_to_nvs(root, "calendar", "refresh_token");
+                        xTaskNotifyGive(xcalendarStartupHandle);
                     }
                 } else {
                     ESP_LOGE(TAG, "Failed to parse JSON: %s", responseBuffer);
@@ -328,7 +329,8 @@ void server_check_task(void *pvParameters) {
             };
             xQueueSend(gui_queue, &ev, portMAX_DELAY);
             ESP_LOGI(TAG, "Server connected successfully, success count: %d", success_count);
-            calendarInit();
+            xTaskNotifyGive(xcalendarStartupHandle);
+
             // 等待 token 可用
             vTaskSuspend(NULL);
         } else {

@@ -66,7 +66,8 @@
         "ec11_driver.h": "c",
         "esp_timer.h": "c",
         "base64_internal.h": "c",
-        "esp_sntp.h": "c"
+        "esp_sntp.h": "c",
+        "compare": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"

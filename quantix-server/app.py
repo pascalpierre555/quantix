@@ -93,6 +93,47 @@ def token_required(f):
     return decorated
 
 
+def ensure_google_token_valid(username):
+    google_info = authorized_users.get(username, {}).get('google')
+    if not google_info:
+        return False
+    # 檢查是否過期
+    if time.time() > google_info.get('expires_at', 0):
+        # 嘗試 refresh
+        if not google_info.get('refresh_token'):
+            return False
+        response = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+                "refresh_token": google_info['refresh_token'],
+                "grant_type": "refresh_token"
+            }
+        )
+        if response.status_code == 200:
+            token_data = response.json()
+            google_info['access_token'] = token_data['access_token']
+            google_info['expires_at'] = time.time(
+            ) + token_data.get("expires_in", 3600)
+            return True
+        else:
+            return False
+    return True
+
+
+def ensure_valid_google_token(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        username = kwargs.get('username') or g.get('current_user')
+        if not username:
+            return jsonify({'error': 'No username found'}), 400
+        if not ensure_google_token_valid(username):
+            return jsonify({'error': 'Google token invalid or refresh failed'}), 401
+        return f(*args, **kwargs)
+    return wrapper
+
+
 @app.route("/ping")
 def ping():
     return jsonify({"status": "OK"})
@@ -204,7 +245,8 @@ def oauth_callback():
     authorized_users[username]['google'] = {
         "email": user_info.get("email"),
         "access_token": access_token,
-        "refresh_token": refresh_token
+        "refresh_token": refresh_token,
+        "expires_at": time.time() + token_data.get("expires_in", 3600)  # expires_in 通常是 3600
     }
 
     return f"""
@@ -230,6 +272,60 @@ def check_result():
 @token_required
 def get_stock():
     return jsonify({'stock': '2330.TW', 'price': 799.5})
+
+
+@app.route('/api/calendar', methods=['POST'])
+@token_required
+@ensure_valid_google_token
+def get_calendar_events():
+    username = g.current_user
+    google_info = authorized_users[username].get('google')
+    if not google_info:
+        return jsonify({'error': 'Google 未授權'}), 403
+
+    data = request.json
+    date_str = data.get('date')  # 期望格式：'YYYY-MM-DD'
+    if not date_str:
+        return jsonify({'error': '請提供日期'}), 400
+
+    # 產生 RFC3339 格式的開始與結束時間
+    try:
+        from datetime import datetime, timedelta
+        start_dt = datetime.strptime(date_str, "%Y-%m-%d")
+        end_dt = start_dt + timedelta(days=1)
+        time_min = start_dt.isoformat() + 'Z'
+        time_max = end_dt.isoformat() + 'Z'
+    except Exception as e:
+        return jsonify({'error': '日期格式錯誤，請用 YYYY-MM-DD'}), 400
+
+    # 呼叫 Google Calendar API
+    resp = requests.get(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+        params={
+            "timeMin": time_min,
+            "timeMax": time_max,
+            "singleEvents": True,
+            "orderBy": "startTime"
+        },
+        headers={
+            "Authorization": f"Bearer {google_info['access_token']}"
+        }
+    )
+
+    if resp.status_code != 200:
+        return jsonify({'error': 'Google Calendar API 失敗', 'detail': resp.text}), 500
+
+    events = resp.json().get('items', [])
+    # 只回傳必要欄位
+    result = []
+    for event in events:
+        result.append({
+            "summary": event.get("summary"),
+            "start": event.get("start", {}).get("dateTime") or event.get("start", {}).get("date"),
+            "end": event.get("end", {}).get("dateTime") or event.get("end", {}).get("date"),
+        })
+
+    return jsonify({"events": result})
 
 
 if __name__ == '__main__':
