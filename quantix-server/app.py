@@ -328,5 +328,23 @@ def get_calendar_events():
     return jsonify({"events": result})
 
 
+font_data = {
+    "e4bda0": [0x00, 0x00, 0x00, 0x00, 0x1D, 0xC0, 0x3B, 0xFF],
+    "e5a5bd": [0x00, 0x00, 0x73, 0xFF, 0xFE, 0x1E, 0x6E, 0x38],
+}
+
+
+@app.route("/font")
+def get_font():
+    chars = request.args.get("chars", "")
+    result = {}
+    # 每 6 個字元為一組 hex code
+    for i in range(0, len(chars), 6):
+        hex_code = chars[i:i+6]
+        if hex_code in font_data:
+            result[hex_code] = font_data[hex_code]
+    return jsonify(result)
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=443, ssl_context=('cert.pem', 'key.pem'))

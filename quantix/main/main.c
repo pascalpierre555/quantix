@@ -1,6 +1,7 @@
 #include "EC11_driver.h"
 #include "calendar.h"
 #include "esp_err.h"
+#include "esp_littlefs.h"
 #include "esp_log.h"
 #include "font_task.h"
 #include "net_task.h"
