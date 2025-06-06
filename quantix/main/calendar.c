@@ -67,7 +67,7 @@ void calendarStartup(void *pvParameters) {
             xTaskNotifyGive(xUserSettingsHandle);
             ESP_LOGE(TAG, "Failed to read calendar settings");
         } else {
-            ESP_LOGI(TAG, "Calendar settings found, proceeding with calendar initialization.");
+            ESP_LOGI(TAG, "Calendar settings found, download calendar data.");
         }
     }
 }

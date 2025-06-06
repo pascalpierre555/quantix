@@ -23,6 +23,9 @@
 
 static const char *TAG = "NET_TASK";
 
+#define NET_QUEUE_SIZE 8
+QueueHandle_t net_queue;
+
 // 定義憑證檔案的路徑
 extern const char isrgrootx1_pem_start[] asm("_binary_isrgrootx1_pem_start");
 extern const char isrgrootx1_pem_end[] asm("_binary_isrgrootx1_pem_end");
@@ -68,6 +71,54 @@ esp_err_t get_response_event_handler(esp_http_client_event_t *evt) {
     }
 
     return ESP_OK;
+}
+
+void net_worker_task(void *pvParameters) {
+    net_event_t event;
+    for (;;) {
+        if (xQueueReceive(net_queue, &event, portMAX_DELAY) == pdTRUE) {
+            // 設定 HTTP config
+            esp_http_client_config_t config = {
+                .url = event.url,
+                .method = event.method,
+                .timeout_ms = 5000,
+                .event_handler = get_response_event_handler, // 你原本的 handler
+                .user_data = event.save_to_buffer ? event.response_buffer : NULL,
+            };
+            esp_http_client_handle_t client = esp_http_client_init(&config);
+
+            if (event.use_jwt) {
+                char *token = jwt_load_from_nvs();
+                if (token) {
+                    static char auth_header[256];
+                    snprintf(auth_header, sizeof(auth_header), "Bearer %s", token);
+                    esp_http_client_set_header(client, "Authorization", auth_header);
+                }
+            }
+            if (event.method == HTTP_METHOD_POST && event.post_data) {
+                esp_http_client_set_post_field(client, event.post_data, strlen(event.post_data));
+            }
+            esp_http_client_set_header(client, "Content-Type", "application/json");
+            esp_http_client_set_header(client, "Accept-Encoding", "identity");
+
+            esp_err_t err = esp_http_client_perform(client);
+
+            // 若要存回應
+            if (event.save_to_buffer && event.response_buffer) {
+                int len = esp_http_client_get_content_length(client);
+                if (len > 0 && len < event.response_buffer_size) {
+                    esp_http_client_read(client, event.response_buffer, len);
+                    event.response_buffer[len] = '\0';
+                }
+            }
+
+            if (event.on_finish) {
+                event.on_finish(&event, err);
+            }
+
+            esp_http_client_cleanup(client);
+        }
+    }
 }
 
 bool http_response_save_to_nvs(cJSON *root, char *nvs_name, char *key) {
@@ -374,7 +425,6 @@ void userSettings(void *pvParameters) {
         .cert_pem = isrgrootx1_pem_start,
         .method = HTTP_METHOD_POST,
     };
-    memset(responseBuffer, 0, sizeof(responseBuffer));
     esp_http_client_handle_t client = esp_http_client_init(&config);
     esp_http_client_set_header(client, "Content-Type", "application/json");
     esp_http_client_set_header(client, "Accept-Encoding", "identity");
@@ -387,6 +437,7 @@ void userSettings(void *pvParameters) {
         if (token) {
             snprintf(auth_header, sizeof(auth_header), "Bearer %s", token);
             esp_http_client_set_header(client, "Authorization", auth_header);
+            memset(responseBuffer, 0, sizeof(responseBuffer));
             output_len = 0;
             esp_err_t err = esp_http_client_perform(client);
             if (err == ESP_OK) {
@@ -431,6 +482,22 @@ void userSettings(void *pvParameters) {
         }
     }
     esp_http_client_cleanup(client);
+}
+
+void download_calendar_data_task(void *pvParameters) {
+    esp_http_client_config_t config = {
+        .url = SETTING_URL,
+        .event_handler = get_response_event_handler,
+        .timeout_ms = 3000,
+        .cert_pem = isrgrootx1_pem_start,
+        .method = HTTP_METHOD_POST,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "Accept-Encoding", "identity");
+    for (;;) {
+        xQueueReceive()
+    }
 }
 
 void netStartup(void *pvParameters) {
