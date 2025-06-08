@@ -64,7 +64,7 @@ void calendarStartup(void *pvParameters) {
                 .msg = "No calendar settings found. Generating QR code for calendar setup...",
             };
             xQueueSend(gui_queue, &ev, portMAX_DELAY);
-            xTaskNotifyGive(xUserSettingsHandle);
+            userSettings();
             ESP_LOGE(TAG, "Failed to read calendar settings");
         } else {
             ESP_LOGI(TAG, "Calendar settings found, download calendar data.");

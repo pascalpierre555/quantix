@@ -1,6 +1,7 @@
 #ifndef NET_TASK_H
 #define NET_TASK_H
 
+#include "cJSON.h"
 #include "esp_err.h"
 #include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
@@ -10,7 +11,6 @@ typedef enum { NET_CHECK_OK, NET_CHECK_FAIL } net_check_result_t;
 
 extern TaskHandle_t xServerCheckHandle;
 extern TaskHandle_t xServerLoginHandle;
-extern TaskHandle_t xUserSettingsHandle;
 extern QueueHandle_t net_queue;
 extern EventGroupHandle_t net_event_group;
 
@@ -20,7 +20,7 @@ extern EventGroupHandle_t net_event_group;
 #define NET_TIME_AVAILABLE_BIT BIT3
 #define NET_GOOGLE_TOKEN_AVAILABLE_BIT BIT4
 
-typedef struct {
+typedef struct net_event_t {
     const char *url;                 // 請求的完整 URL
     esp_http_client_method_t method; // HTTP 方法
     const char *post_data;           // POST 資料（可為 NULL）
@@ -30,28 +30,41 @@ typedef struct {
     size_t response_buffer_size;     // buffer 大小
     void (*on_finish)(struct net_event_t *event, esp_err_t result); // 完成 callback
     void *user_data;                                                // 使用者自訂資料
+    cJSON *json_root; // 若不為 NULL，則自動 parse JSON 並存於此
 } net_event_t;
 
-void netStartup(void *pvParameters);
-bool http_check_server_connectivity(esp_http_client_handle_t client);
-void cb_connection_ok(void *pvParameter);
+// 公用網路 worker task
+void net_worker_task(void *pvParameters);
+
+// 伺服器連線檢查
+void server_check_task(void *pvParameters);
+static void server_check_callback(net_event_t *event, esp_err_t err);
+
+// 使用者設定下載
+void userSettings(void);
+static void user_settings_callback(net_event_t *event, esp_err_t err);
+
+// 登入
 void server_login(void *pvParameter);
+static void server_login_callback(net_event_t *event, esp_err_t err);
+
+// 驗證結果檢查
+void esp_check_auth_result(void);
+static void check_auth_result_callback(net_event_t *event, esp_err_t err);
+
+// 狀態檢查
 void statusCheck(void *pvParameters);
 
-// typedef enum {
-//     HTTP_CMD_LOGIN,
-//     HTTP_CMD_SETTINGS,
-//     HTTP_CMD_PING,
-//     // ...可擴充
-// } http_cmd_t;
+// 連線成功/失敗回呼
+void cb_connection_ok(void *pvParameter);
+void cb_button_wifi_settings(void);
+void cb_button_continue_without_wifi(void);
+void cb_button_setting_done(void);
 
-// typedef struct {
-//     http_cmd_t cmd;
-//     char url[128];
-//     char method[8]; // "GET" or "POST"
-//     char body[256];
-//     char auth_header[256];
-//     TaskHandle_t notify_task; // 回傳時要通知哪個 task
-// } http_task_msg_t;
+// 伺服器連線測試
+bool http_check_server_connectivity(esp_http_client_handle_t client);
+
+// 網路啟動
+void netStartup(void *pvParameters);
 
 #endif // NET_TASK_H

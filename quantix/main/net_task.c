@@ -43,7 +43,6 @@ static char responseBuffer[512];
 // 定義task handle
 TaskHandle_t xServerCheckHandle = NULL;
 TaskHandle_t xServerLoginHandle = NULL;
-TaskHandle_t xUserSettingsHandle = NULL;
 TaskHandle_t xEspCheckAuthResultHandle = NULL;
 
 EventGroupHandle_t net_event_group;
@@ -83,6 +82,7 @@ void net_worker_task(void *pvParameters) {
                 .method = event.method,
                 .timeout_ms = 5000,
                 .event_handler = get_response_event_handler, // 你原本的 handler
+                .cert_pem = isrgrootx1_pem_start,            // 使用 ISRG Root X1 憑證
                 .user_data = event.save_to_buffer ? event.response_buffer : NULL,
             };
             esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -112,10 +112,18 @@ void net_worker_task(void *pvParameters) {
                 }
             }
 
+            // 新增：自動解析 JSON
+            if (event.json_root != NULL && event.response_buffer) {
+                event.json_root = cJSON_Parse(event.response_buffer);
+            } else {
+                event.json_root = NULL;
+            }
+
             if (event.on_finish) {
                 event.on_finish(&event, err);
             }
 
+            // 若有 json_root，記得 callback 用完要 cJSON_Delete
             esp_http_client_cleanup(client);
         }
     }
@@ -148,6 +156,55 @@ bool http_response_save_to_nvs(cJSON *root, char *nvs_name, char *key) {
     return 0;
 }
 
+// server_check_task 的 callback
+static void server_check_callback(net_event_t *event, esp_err_t err) {
+    static uint8_t success_count = 0;
+    static uint8_t failure_count = 0;
+    static TickType_t retry_delay_ms = 1000;
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Server connected successfully");
+        success_count++;
+        failure_count = 0;
+        retry_delay_ms = 1000;
+        xEventGroupSetBits(net_event_group, NET_SERVER_CONNECTED_BIT);
+        event_t ev = {
+            .event_id = SCREEN_EVENT_CENTER,
+            .msg = "Server connected successfully:)",
+        };
+        xQueueSend(gui_queue, &ev, portMAX_DELAY);
+        xTaskNotifyGive(xcalendarStartupHandle);
+        vTaskSuspend(NULL);
+    } else {
+        xEventGroupClearBits(net_event_group, NET_SERVER_CONNECTED_BIT);
+        success_count = 0;
+        failure_count++;
+        ESP_LOGW(TAG, "Server connect failed, count: %d", failure_count);
+
+        if (failure_count == 1) {
+            event_t ev = {
+                .event_id = SCREEN_EVENT_NO_CONNECTION,
+            };
+            xQueueSend(gui_queue, &ev, portMAX_DELAY);
+            ec11_set_button_callback(&cb_button_wifi_settings);
+            retry_delay_ms = 1 * 1000;
+        } else if (failure_count < 6) {
+            retry_delay_ms = 1 * 1000;
+        } else if (failure_count < 10) {
+            retry_delay_ms = 5 * 1000;
+        } else if (failure_count < 20) {
+            retry_delay_ms = 30 * 1000;
+        } else {
+            retry_delay_ms = 5 * 60 * 1000;
+        }
+        if (retry_delay_ms > MAX_BACKOFF_MS) {
+            retry_delay_ms = MAX_BACKOFF_MS;
+        }
+        ESP_LOGI(TAG, "Retrying after %lu ms", (unsigned long)retry_delay_ms);
+        vTaskDelay(retry_delay_ms / portTICK_PERIOD_MS);
+    }
+}
+
 void cb_button_wifi_settings(void) {
     ec11_clean_button_callback();
     wifi_manager_send_message(WM_ORDER_START_AP, NULL);
@@ -160,19 +217,11 @@ void cb_button_continue_without_wifi(void) {
 
 void cb_button_setting_done(void) {
     ec11_clean_button_callback();
-    vTaskNotifyGiveFromISR(xEspCheckAuthResultHandle, NULL);
+    esp_check_auth_result();
 }
 
-void esp_check_auth_result(void *pvParameters) {
-    esp_http_client_config_t config = {
-        .url = CHECK_AUTH_RESULT_URL,
-        .event_handler = get_response_event_handler,
-        .timeout_ms = 3000,
-        .cert_pem = isrgrootx1_pem_start,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_header(client, "Accept-Encoding", "identity");
+// 新增 callback 處理 HTTP 結果
+static void check_auth_result_callback(net_event_t *event, esp_err_t err) {
     event_t ev = {
         .event_id = SCREEN_EVENT_CENTER,
         .msg = "Please try again, status: ",
@@ -180,128 +229,140 @@ void esp_check_auth_result(void *pvParameters) {
     event_t evqr = {
         .event_id = SCREEN_EVENT_QRCODE,
     };
-    for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // 等待通知喚醒
-        char *token = jwt_load_from_nvs();
-        output_len = 0; // Reset output length
-        static char auth_header[256];
-        if (token) {
-            snprintf(auth_header, sizeof(auth_header), "Bearer %s", token);
-            esp_http_client_set_header(client, "Authorization", auth_header);
-            output_len = 0;
-            esp_err_t err = esp_http_client_perform(client);
-            if (err == ESP_OK) {
-                cJSON *root = cJSON_Parse(responseBuffer);
-                if (root) {
-                    ESP_LOGI(TAG, "HTTP response: %s", responseBuffer);
-                    if (http_response_save_to_nvs(root, "calendar", "email")) {
-                        cJSON *item = cJSON_GetObjectItem(root, "status");
-                        char *status = cJSON_GetStringValue(item);
-                        if (status) {
-                            ESP_LOGI(TAG, "Status: %s", status);
-                            ev.msg[26] = '\0'; // 確保字串結尾
-                            strncat(ev.msg, status, MAX_MSG_LEN - strlen(ev.msg) - 1);
-                            xQueueSend(gui_queue, &ev, portMAX_DELAY);
-                            xSemaphoreTake(xScreen, portMAX_DELAY);
-                            ec11_set_button_callback(&cb_button_setting_done);
-                            xSemaphoreGive(xScreen);
-                            xQueueSend(gui_queue, &evqr, portMAX_DELAY);
-                        }
-                    } else {
-                        http_response_save_to_nvs(root, "calendar", "access_token");
-                        http_response_save_to_nvs(root, "calendar", "refresh_token");
-                        xTaskNotifyGive(xcalendarStartupHandle);
-                    }
-                } else {
-                    ESP_LOGE(TAG, "Failed to parse JSON: %s", responseBuffer);
-                }
-                cJSON_Delete(root);
+
+    if (err == ESP_OK && event->json_root) {
+        ESP_LOGI(TAG, "HTTP response: %s", event->response_buffer);
+        if (http_response_save_to_nvs(event->json_root, "calendar", "email")) {
+            cJSON *item = cJSON_GetObjectItem(event->json_root, "status");
+            char *status = cJSON_GetStringValue(item);
+            if (status) {
+                ESP_LOGI(TAG, "Status: %s", status);
+                ev.msg[26] = '\0'; // 確保字串結尾
+                strncat(ev.msg, status, MAX_MSG_LEN - strlen(ev.msg) - 1);
+                xQueueSend(gui_queue, &ev, portMAX_DELAY);
+                xSemaphoreTake(xScreen, portMAX_DELAY);
+                ec11_set_button_callback(&cb_button_setting_done);
+                xSemaphoreGive(xScreen);
+                xQueueSend(gui_queue, &evqr, portMAX_DELAY);
             }
+        } else {
+            http_response_save_to_nvs(event->json_root, "calendar", "access_token");
+            http_response_save_to_nvs(event->json_root, "calendar", "refresh_token");
+            xTaskNotifyGive(xcalendarStartupHandle);
         }
-    }
-    esp_http_client_cleanup(client);
-}
-
-/**
- * @brief 檢查 HTTP 連線
- *
- * 此函式會檢查與指定 URL 的 HTTP
- * 連線是否成功。若成功，則輸出狀態碼；若失敗，則輸出錯誤訊息。
- *
- * @param void
- */
-
-bool http_check_server_connectivity(esp_http_client_handle_t client) {
-    esp_err_t err = esp_http_client_perform(client);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "HTTP connected successfully. Status = %d",
-                 esp_http_client_get_status_code(client));
-        return 1;
+        cJSON_Delete(event->json_root); // 用完要釋放
     } else {
-        ESP_LOGE(TAG, "HTTP connection failed: %s", esp_err_to_name(err));
-        return 0;
+        ESP_LOGE(TAG, "Failed to parse JSON or HTTP error: %s",
+                 event->response_buffer ? event->response_buffer : "");
     }
 }
 
-/**
- * @brief WiFi 連線成功後的回呼函式
- *
- * 此函式會在 WiFi 連線成功並取得 IP 時被呼叫，並將取得的 IP 轉為字串後輸出至
- * log。
- *
- * @param pvParameter 指向 ip_event_got_ip_t 結構的指標，包含 IP 資訊
- */
+// 登入結果 callback
+static void server_login_callback(net_event_t *event, esp_err_t err) {
+    if (err == ESP_OK && event->json_root) {
+        cJSON *token_item = cJSON_GetObjectItem(event->json_root, "token");
+        if (token_item && cJSON_IsString(token_item)) {
+            const char *jwt = token_item->valuestring;
+            jwt_save_to_nvs(jwt);
+            ESP_LOGI(TAG, "Login success, token saved.");
+            xEventGroupSetBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
+        } else {
+            ESP_LOGE(TAG, "No 'token' in JSON response!");
+        }
+        cJSON_Delete(event->json_root);
+    } else {
+        ESP_LOGE(TAG, "Login failed or JSON parse error: %s",
+                 event->response_buffer ? event->response_buffer : "");
+        xEventGroupClearBits(net_event_group, NET_SERVER_CONNECTED_BIT);
+        vTaskResume(xServerCheckHandle);     // 喚醒 server_check_task
+        xTaskNotifyGive(xServerCheckHandle); // 喚醒 server_check_task
+    }
+}
 
+// userSettings 的 callback
+static void user_settings_callback(net_event_t *event, esp_err_t err) {
+    if (err == ESP_OK && event->json_root) {
+        cJSON *setting_item = cJSON_GetObjectItem(event->json_root, "qr_c_array_base64");
+        if (setting_item && cJSON_IsString(setting_item)) {
+            uint8_t buf[256];
+            size_t olen = 0;
+            const char *b64str = setting_item->valuestring;
+            if (!mbedtls_base64_decode(buf, sizeof(buf), &olen, (const unsigned char *)b64str,
+                                       strlen(b64str))) {
+                ESP_LOGI(TAG, "Decoded base64 string successfully, length: %zu", olen);
+                event_t ev = {
+                    .event_id = SCREEN_EVENT_QRCODE,
+                };
+                setting_qrcode_setting((char *)buf);
+                xQueueSend(gui_queue, &ev, portMAX_DELAY);
+                UBaseType_t stack_remain = uxTaskGetStackHighWaterMark(NULL);
+                ESP_LOGI("TASK", "Stack high water mark: %u words", stack_remain);
+                ec11_set_button_callback(&cb_button_setting_done);
+            }
+        } else {
+            ESP_LOGE(TAG, "No qrcode in JSON response!");
+        }
+        cJSON_Delete(event->json_root);
+        xEventGroupSetBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
+    } else {
+        ESP_LOGE(TAG, "Failed to parse JSON or HTTP error: %s",
+                 event->response_buffer ? event->response_buffer : "");
+        xEventGroupClearBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
+        xTaskNotifyGive(xServerLoginHandle); // 喚醒 server_login
+    }
+}
+
+void esp_check_auth_result(void) {
+    net_event_t event = {
+        .url = CHECK_AUTH_RESULT_URL,
+        .method = HTTP_METHOD_GET,
+        .post_data = NULL,
+        .use_jwt = true,
+        .save_to_buffer = true,
+        .response_buffer = responseBuffer,
+        .response_buffer_size = sizeof(responseBuffer),
+        .on_finish = check_auth_result_callback,
+        .user_data = NULL,
+        .json_root = (void *)1,
+    };
+    xQueueSend(net_queue, &event, portMAX_DELAY);
+}
+
+// 改寫後的 server_login
 void server_login(void *pvParameter) {
 
     // char *buf = malloc((buf_size + 1) * sizeof(char));
     const char *post_data = "{\"username\":\"esp32\", \"password\":\"supersecret\"}";
-    esp_http_client_config_t config = {
-        .username = "esp32",
-        .password = "supersecret",
-        .url = LOGIN_URL,
-        .event_handler = get_response_event_handler,
-        .timeout_ms = 3000,
-        .cert_pem = isrgrootx1_pem_start,
-        .method = HTTP_METHOD_POST,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_header(client, "Accept-Encoding", "identity");
-    esp_http_client_set_post_field(client, post_data, strlen(post_data));
-    TickType_t token_expire_time = 60 * 60 * 1000; // 重置 token 過期時間
+    TickType_t token_expire_time = 60 * 60 * 1000; // 1小時
 
     for (;;) {
         ulTaskNotifyTake(pdTRUE, token_expire_time / portTICK_PERIOD_MS); // 等待通知喚醒
         ESP_LOGI(TAG, "No token found. Logging in...");
         xEventGroupClearBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
-        esp_err_t err = esp_http_client_perform(client);
-        if (err == ESP_OK) {
-            ESP_LOGI(TAG, "HTTP response: %s", responseBuffer);
-            cJSON *root = cJSON_Parse(responseBuffer);
-            if (root) {
-                cJSON *token_item = cJSON_GetObjectItem(root, "token");
-                if (token_item && cJSON_IsString(token_item)) {
-                    const char *jwt = token_item->valuestring;
-                    jwt_save_to_nvs(jwt);
-                } else {
-                    ESP_LOGE(TAG, "No 'token' in JSON response!");
-                }
-                cJSON_Delete(root);
-                token_expire_time = 60 * 60 * 1000;
-                xEventGroupSetBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
-            } else {
-                token_expire_time = 500;
-                ESP_LOGE(TAG, "Failed to parse JSON: %s", responseBuffer);
-            }
+
+        net_event_t event = {
+            .url = LOGIN_URL,
+            .method = HTTP_METHOD_POST,
+            .post_data = post_data,
+            .use_jwt = false,
+            .save_to_buffer = true,
+            .response_buffer = responseBuffer,
+            .response_buffer_size = sizeof(responseBuffer),
+            .on_finish = server_login_callback,
+            .user_data = NULL,
+            .json_root = (void *)1, // 只要不是NULL就會自動parse
+        };
+        xQueueSend(net_queue, &event, portMAX_DELAY);
+
+        // 等待 NET_TOKEN_AVAILABLE_BIT 設定或逾時
+        EventBits_t bits = xEventGroupWaitBits(net_event_group, NET_TOKEN_AVAILABLE_BIT, pdFALSE,
+                                               pdFALSE, token_expire_time);
+        if (bits & NET_TOKEN_AVAILABLE_BIT) {
+            token_expire_time = 60 * 60 * 1000; // 成功則重設為1小時
         } else {
-            ESP_LOGE(TAG, "Login failed: %s", esp_err_to_name(err));
-            xEventGroupClearBits(net_event_group, NET_SERVER_CONNECTED_BIT);
-            vTaskResume(xServerCheckHandle);     // 喚醒 server_check_task
-            xTaskNotifyGive(xServerCheckHandle); // 喚醒 server_check_task
+            token_expire_time = 500; // 失敗則快速重試
         }
     }
-    esp_http_client_cleanup(client);
 }
 
 void cb_connection_ok(void *pvParameter) {
@@ -340,148 +401,50 @@ void cb_wifi_required(void *pvParameter) {
  */
 
 void server_check_task(void *pvParameters) {
-    uint8_t success_count = 0;
-    uint8_t failure_count = 0;
-    esp_http_client_config_t config = {
-        .url = TEST_URL,
-        .event_handler = _http_event_handler,
-        .timeout_ms = 3000,
-        .cert_pem = isrgrootx1_pem_start,
-    };
-    esp_http_client_handle_t client;
-    TickType_t retry_delay_ms = 1000;
-
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, retry_delay_ms / portTICK_PERIOD_MS);
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         xEventGroupWaitBits(net_event_group, NET_WIFI_CONNECTED_BIT, pdFALSE, pdFALSE,
                             portMAX_DELAY);
-
-        client = esp_http_client_init(&config);
-        if (!client) {
-            ESP_LOGE(TAG, "Failed to initialize HTTP client");
-            vTaskDelay(retry_delay_ms / portTICK_PERIOD_MS);
-            continue;
-        }
-        if (http_check_server_connectivity(client)) {
-            ESP_LOGI(TAG, "Send success");
-            success_count++;
-            failure_count = 0;
-            retry_delay_ms = 1000;
-            if (!(NET_TOKEN_AVAILABLE_BIT & xEventGroupGetBits(net_event_group))) {
-                // 如果沒有 token，則嘗試登入
-                xTaskNotifyGive(xServerLoginHandle);
-            }
-            xEventGroupWaitBits(net_event_group, NET_TOKEN_AVAILABLE_BIT, pdFALSE, pdFALSE,
-                                portMAX_DELAY);
-            xEventGroupSetBits(net_event_group, NET_SERVER_CONNECTED_BIT);
-            event_t ev = {
-                .event_id = SCREEN_EVENT_CENTER,
-                .msg = "Server connected successfully:)",
-            };
-            xQueueSend(gui_queue, &ev, portMAX_DELAY);
-            ESP_LOGI(TAG, "Server connected successfully, success count: %d", success_count);
-            xTaskNotifyGive(xcalendarStartupHandle);
-
-            // 等待 token 可用
-            vTaskSuspend(NULL);
-        } else {
-            xEventGroupClearBits(net_event_group, NET_SERVER_CONNECTED_BIT);
-            success_count = 0;
-            failure_count++;
-            ESP_LOGW(TAG, "Send failed, count: %d", failure_count);
-
-            if (failure_count == 1) {
-                event_t ev = {
-                    .event_id = SCREEN_EVENT_NO_CONNECTION,
-                };
-                xQueueSend(gui_queue, &ev, portMAX_DELAY);
-                ec11_set_button_callback(&cb_button_wifi_settings);
-                retry_delay_ms = 1 * 1000;
-            } else if (failure_count < 6) {
-                retry_delay_ms = 1 * 1000;
-            } else if (failure_count < 10) {
-                retry_delay_ms = 5 * 1000;
-            } else if (failure_count < 20) {
-                retry_delay_ms = 30 * 1000;
-            } else {
-                retry_delay_ms = 5 * 60 * 1000;
-            }
-
-            if (retry_delay_ms > MAX_BACKOFF_MS) {
-                retry_delay_ms = MAX_BACKOFF_MS;
-            }
-
-            ESP_LOGI(TAG, "Retrying after %lu ms", (unsigned long)retry_delay_ms);
-        }
-        esp_http_client_cleanup(client);
+        net_event_t event = {
+            .url = TEST_URL,
+            .method = HTTP_METHOD_GET,
+            .post_data = NULL,
+            .use_jwt = false,
+            .save_to_buffer = false,
+            .response_buffer = NULL,
+            .response_buffer_size = 0,
+            .on_finish = server_check_callback,
+            .user_data = NULL,
+            .json_root = NULL, // 不需要 parse JSON
+        };
+        xQueueSend(net_queue, &event, portMAX_DELAY);
     }
 }
 
-void userSettings(void *pvParameters) {
-    esp_http_client_config_t config = {
-        .url = SETTING_URL,
-        .event_handler = get_response_event_handler,
-        .timeout_ms = 3000,
-        .cert_pem = isrgrootx1_pem_start,
-        .method = HTTP_METHOD_POST,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_header(client, "Accept-Encoding", "identity");
-    for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // 等待通知喚醒
-        ESP_LOGI(TAG, "Getting user setting url...");
+void userSettings(void) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // 等待通知喚醒
+    ESP_LOGI(TAG, "Getting user setting url...");
 
-        char *token = jwt_load_from_nvs();
-        static char auth_header[256];
-        if (token) {
-            snprintf(auth_header, sizeof(auth_header), "Bearer %s", token);
-            esp_http_client_set_header(client, "Authorization", auth_header);
-            memset(responseBuffer, 0, sizeof(responseBuffer));
-            output_len = 0;
-            esp_err_t err = esp_http_client_perform(client);
-            if (err == ESP_OK) {
-                ESP_LOGI(TAG, "HTTP response: %s", responseBuffer);
-                cJSON *root = cJSON_Parse(responseBuffer);
-                if (root) {
-                    cJSON *setting_item = cJSON_GetObjectItem(root, "qr_c_array_base64");
-                    if (setting_item && cJSON_IsString(setting_item)) {
-                        uint8_t buf[256];
-                        size_t olen = 0;
-                        const char *b64str = setting_item->valuestring; // 你的 base64 字串
-                        if (!mbedtls_base64_decode(buf, sizeof(buf), &olen,
-                                                   (const unsigned char *)b64str, strlen(b64str))) {
-
-                            // 成功獲取session token
-                            ESP_LOGI(TAG, "Decoded base64 string successfully, length: %zu", olen);
-                            event_t ev = {
-                                .event_id = SCREEN_EVENT_QRCODE,
-                            };
-                            setting_qrcode_setting((char *)buf);
-                            xQueueSend(gui_queue, &ev, portMAX_DELAY);
-                            UBaseType_t stack_remain =
-                                uxTaskGetStackHighWaterMark(NULL); // NULL 代表查詢目前 task
-                            ESP_LOGI("TASK", "Stack high water mark: %u words", stack_remain);
-                            ec11_set_button_callback(&cb_button_setting_done);
-                        }
-                    } else {
-                        ESP_LOGE(TAG, "No qrcode in JSON response!");
-                    }
-                    cJSON_Delete(root);
-                    xEventGroupSetBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
-                } else {
-                    ESP_LOGE(TAG, "Failed to parse JSON: %s", responseBuffer);
-                }
-            } else {
-                ESP_LOGE(TAG, "failed: %s", esp_err_to_name(err));
-            }
-        } else {
-            ESP_LOGE(TAG, "No token found, skipping user settings fetch.");
-            xEventGroupClearBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
-            xTaskNotifyGive(xServerLoginHandle); // 喚醒 server_login
-        }
+    char *token = jwt_load_from_nvs();
+    if (token) {
+        net_event_t event = {
+            .url = SETTING_URL,
+            .method = HTTP_METHOD_POST,
+            .post_data = NULL,
+            .use_jwt = true,
+            .save_to_buffer = true,
+            .response_buffer = responseBuffer,
+            .response_buffer_size = sizeof(responseBuffer),
+            .on_finish = user_settings_callback,
+            .user_data = NULL,
+            .json_root = (void *)1, // 只要不是NULL就會自動parse
+        };
+        xQueueSend(net_queue, &event, portMAX_DELAY);
+    } else {
+        ESP_LOGE(TAG, "No token found, skipping user settings fetch.");
+        xEventGroupClearBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
+        xTaskNotifyGive(xServerLoginHandle); // 喚醒 server_login
     }
-    esp_http_client_cleanup(client);
 }
 
 void download_calendar_data_task(void *pvParameters) {
@@ -495,20 +458,17 @@ void download_calendar_data_task(void *pvParameters) {
     esp_http_client_handle_t client = esp_http_client_init(&config);
     esp_http_client_set_header(client, "Content-Type", "application/json");
     esp_http_client_set_header(client, "Accept-Encoding", "identity");
-    for (;;) {
-        xQueueReceive()
-    }
 }
 
 void netStartup(void *pvParameters) {
     wifi_manager_start();
     wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_connection_ok);
     wifi_manager_set_callback(WM_ORDER_START_AP, &cb_wifi_required);
+    net_queue = xQueueCreate(NET_QUEUE_SIZE, sizeof(net_event_t));
+    xTaskCreate(net_worker_task, "net_worker_task", 8192, NULL, 5, NULL);
+
     xTaskCreate(server_check_task, "server_check_task", 4096, NULL, 5, &xServerCheckHandle);
     xTaskCreate(server_login, "server_login", 4096, NULL, 5, &xServerLoginHandle);
-    xTaskCreate(userSettings, "userSettings", 8192, NULL, 5, &xUserSettingsHandle);
-    xTaskCreate(esp_check_auth_result, "esp_check_auth_result", 4096, NULL, 5,
-                &xEspCheckAuthResultHandle);
     net_event_group = xEventGroupCreate();
     vTaskDelete(NULL);
 }
