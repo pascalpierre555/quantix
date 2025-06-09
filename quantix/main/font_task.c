@@ -2,6 +2,9 @@
 #include "esp_http_client.h"
 #include "esp_littlefs.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h" // For portMAX_DELAY
+#include "freertos/queue.h"    // For xQueueSend
+#include "net_task.h"          // Required for net_event_t, net_queue
 #include <cJSON.h>
 #include <dirent.h>
 #include <stdbool.h>
@@ -19,6 +22,9 @@ void utf8_to_hex(const char *utf8, char *hex_out, size_t hex_out_size) {
     // 固定輸出 6 字元
     snprintf(hex_out, hex_out_size, "%02x%02x%02x", bytes[0], bytes[1], bytes[2]);
 }
+
+#define FONT_DIR_LEN (sizeof(FONT_DIR) - 1)
+static const char *TAG_FONT = "FONT_TASK";
 
 typedef struct {
     char hex_key[HEX_KEY_LEN]; // hex 字串
@@ -95,7 +101,7 @@ void font_table_init(void) {
     font_table_count = 0;
     // 清空 hash table
     memset(font_hash_table, 0, sizeof(font_hash_table));
-
+    ESP_LOGI(TAG_FONT, "Initializing font table from %s...", FONT_DIR);
     if (!dir) {
         ESP_LOGW("FONT", "opendir failed for %s", FONT_DIR);
         return;
@@ -127,7 +133,7 @@ void font_table_init(void) {
     }
 
     closedir(dir);
-    ESP_LOGI("FONT", "Loaded %d fonts from LittleFS", font_table_count);
+    ESP_LOGI(TAG_FONT, "Loaded %d fonts from LittleFS into table.", font_table_count);
 }
 
 bool font_exists(const char *utf8_char) {
@@ -137,96 +143,161 @@ bool font_exists(const char *utf8_char) {
 }
 
 // 取得 str 中所有未存在的字，所有缺字 hex 串接成一個字串
-int find_missing_characters(const char *str, char *missing, int max_missing) {
-    int count = 0;
+int find_missing_characters(const char *str, char *missing, int missing_buffer_size) {
+    int missing_chars_count = 0;
     missing[0] = '\0'; // 初始化為空字串
-    while (*str && count < max_missing) {
+    size_t current_missing_hex_len = 0;
+    const size_t single_hex_key_len = HEX_KEY_LEN - 1; // Length of "xxxxxx"
+
+    while (*str) {
         int len = 1;
-        if ((*str & 0xF0) == 0xF0)
+        // Determine UTF-8 character length
+        if ((*str & 0xF0) == 0xF0) { // 4-byte UTF-8
             len = 4;
-        else if ((*str & 0xE0) == 0xE0)
+        } else if ((*str & 0xE0) == 0xE0) { // 3-byte UTF-8
             len = 3;
-        else if ((*str & 0xC0) == 0xC0)
+        } else if ((*str & 0xC0) == 0xC0) { // 2-byte UTF-8
             len = 2;
+        }
+        // else len = 1 for ASCII or invalid sequence start byte
 
-        char utf8[4] = {0};
-        memcpy(utf8, str, len);
+        char utf8_char_bytes[5] = {0}; // Max 4 bytes for UTF-8 char + null terminator
+        memcpy(utf8_char_bytes, str, len);
 
-        if (!font_exists(utf8)) {
-            char hex[HEX_KEY_LEN];
-            utf8_to_hex(utf8, hex, sizeof(hex));
-            // 串接到 missing 字串
-            strncat(missing, hex, max_missing * HEX_KEY_LEN - strlen(missing) - 1);
-            count++;
+        // Skip English alphabet and digits
+        if (len == 1) {
+            char c = utf8_char_bytes[0];
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+                str += len;
+                continue; // Skip this character
+            }
+        }
+
+        if (!font_exists(utf8_char_bytes)) {
+            // Check if there's enough space in the missing buffer for one more hex key + null
+            // terminator
+            if (current_missing_hex_len + single_hex_key_len + 1 <= missing_buffer_size) {
+                char hex_key_output[HEX_KEY_LEN]; // Buffer for "xxxxxx\0"
+                utf8_to_hex(utf8_char_bytes, hex_key_output, sizeof(hex_key_output));
+                strcat(missing, hex_key_output); // Append the 6 hex characters
+                current_missing_hex_len += single_hex_key_len;
+                missing_chars_count++;
+            } else {
+                ESP_LOGW(TAG_FONT, "Missing characters hex string buffer full. Cannot add more.");
+                break; // Stop if buffer is full
+            }
         }
 
         str += len;
     }
-    return count;
+    return missing_chars_count;
 }
 
+#define FONT_DOWNLOAD_BUFFER_SIZE 2048 // Adjust if necessary
+static char font_download_response_buffer[FONT_DOWNLOAD_BUFFER_SIZE];
+
+static void font_download_callback(net_event_t *event, esp_err_t result) {
+    if (result == ESP_OK && event->json_root) {
+        ESP_LOGI(TAG_FONT, "Font download successful, processing JSON response.");
+        cJSON *font_item = NULL;
+        int saved_count = 0;
+        cJSON_ArrayForEach(font_item, event->json_root) {
+            const char *hex_filename = font_item->string; // This is the hex key like "e4bda0"
+            cJSON *bitmap_array = font_item;              // This is the cJSON array of bytes
+
+            if (!cJSON_IsArray(bitmap_array)) {
+                ESP_LOGW(TAG_FONT, "Bitmap data for %s is not an array.", hex_filename);
+                continue;
+            }
+
+            char path[FONT_DIR_LEN + HEX_KEY_LEN + 2]; // FONT_DIR + "/" + hex_filename + "\0"
+            snprintf(path, sizeof(path), "%s/%s", FONT_DIR, hex_filename);
+
+            FILE *f = fopen(path, "wb");
+            if (!f) {
+                ESP_LOGE(TAG_FONT, "Failed to open file for writing: %s", path);
+                continue;
+            }
+
+            uint8_t font_pixel_data[FONT_SIZE] = {
+                0}; // Initialize to ensure padding if server sends less
+            int bytes_in_array = cJSON_GetArraySize(bitmap_array);
+            int bytes_to_process = (bytes_in_array < FONT_SIZE) ? bytes_in_array : FONT_SIZE;
+
+            for (int i = 0; i < bytes_to_process; i++) {
+                cJSON *byte_val_item = cJSON_GetArrayItem(bitmap_array, i);
+                if (cJSON_IsNumber(byte_val_item)) {
+                    font_pixel_data[i] = (uint8_t)byte_val_item->valueint;
+                } else {
+                    ESP_LOGW(TAG_FONT, "Invalid byte data in bitmap array for %s at index %d",
+                             hex_filename, i);
+                }
+            }
+
+            size_t written_count =
+                fwrite(font_pixel_data, 1, FONT_SIZE, f); // Always write FONT_SIZE bytes
+            fclose(f);
+
+            if (written_count == FONT_SIZE) {
+                ESP_LOGI(TAG_FONT, "Saved font: %s", path);
+                saved_count++;
+            } else {
+                ESP_LOGE(TAG_FONT, "Failed to write complete font data for: %s (wrote %d/%d)", path,
+                         written_count, FONT_SIZE);
+            }
+        }
+        cJSON_Delete(event->json_root);
+        event->json_root = NULL; // Mark as processed
+
+        if (saved_count > 0) {
+            ESP_LOGI(TAG_FONT, "Finished processing downloaded fonts. Re-initializing font table.");
+            font_table_init(); // Reload fonts into memory
+        }
+
+    } else {
+        ESP_LOGE(TAG_FONT, "Font download failed or JSON parse error. HTTP result: %s",
+                 esp_err_to_name(result));
+        if (event->response_buffer && strlen(event->response_buffer) > 0) {
+            ESP_LOGE(TAG_FONT, "Response: %s", event->response_buffer);
+        }
+        if (event->json_root) { // Should be null if result != ESP_OK from net_worker_task
+                                // perspective
+            cJSON_Delete(event->json_root);
+            event->json_root = NULL;
+        }
+    }
+}
+
+// Queues a request to download missing font characters.
 esp_err_t download_missing_characters(const char *missing_chars) {
-    char url[256];
+    if (missing_chars == NULL || strlen(missing_chars) == 0) {
+        ESP_LOGI(TAG_FONT, "No missing characters to download.");
+        return ESP_OK;
+    }
 
+    static char url[256]; // Static to be safe if net_event_t is copied shallowly by queue
     snprintf(url, sizeof(url), "https://peng-pc.tail941dce.ts.net/font?chars=%s", missing_chars);
+    ESP_LOGI(TAG_FONT, "Requesting missing fonts from: %s", url);
 
-    esp_http_client_config_t config = {
+    net_event_t font_event = {
         .url = url,
         .method = HTTP_METHOD_GET,
+        .post_data = NULL,
+        .use_jwt = false,
+        .save_to_buffer = true,
+        .response_buffer = font_download_response_buffer,
+        .response_buffer_size = sizeof(font_download_response_buffer),
+        .on_finish = font_download_callback,
+        .user_data = NULL,
+        .json_root = (void *)1, // Request net_worker_task to parse JSON
     };
 
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    esp_err_t err = esp_http_client_perform(client);
+    // Ensure font_download_response_buffer is clean before use
+    font_download_response_buffer[0] = '\0';
 
-    if (err != ESP_OK) {
-        ESP_LOGE("FONT", "HTTP GET failed: %s", esp_err_to_name(err));
-        esp_http_client_cleanup(client);
-        return err;
-    }
-
-    int content_length = esp_http_client_get_content_length(client);
-    char *buffer = malloc(content_length + 1);
-    esp_http_client_read(client, buffer, content_length);
-    buffer[content_length] = '\0';
-    esp_http_client_cleanup(client);
-
-    // Parse JSON response
-    cJSON *root = cJSON_Parse(buffer);
-    if (!root) {
-        ESP_LOGE("FONT", "JSON Parse error");
-        free(buffer);
+    if (xQueueSend(net_queue, &font_event, pdMS_TO_TICKS(1000)) != pdPASS) {
+        ESP_LOGE(TAG_FONT, "Failed to send font download request to net_queue.");
         return ESP_FAIL;
     }
-
-    cJSON *item = NULL;
-    cJSON_ArrayForEach(item, root) {
-        const char *utf8_char = item->string;
-        cJSON *bitmap_array = item;
-
-        // 將 UTF-8 轉成 hex 檔名
-        char filename[HEX_KEY_LEN] = {0};
-        utf8_to_hex(utf8_char, filename, sizeof(filename));
-
-        char path[64];
-        snprintf(path, sizeof(path), FONT_DIR "/%s", filename);
-
-        FILE *f = fopen(path, "wb");
-        if (!f) {
-            ESP_LOGE("FONT", "Failed to open file for writing: %s", path);
-            continue;
-        }
-
-        int count = cJSON_GetArraySize(bitmap_array);
-        uint8_t fontdata[FONT_SIZE] = {0};
-        for (int i = 0; i < count && i < FONT_SIZE; i++) {
-            fontdata[i] = (uint8_t)cJSON_GetArrayItem(bitmap_array, i)->valueint;
-        }
-        fwrite(fontdata, 1, FONT_SIZE, f);
-        fclose(f);
-        ESP_LOGI("FONT", "Saved: %s", path);
-    }
-
-    cJSON_Delete(root);
-    free(buffer);
     return ESP_OK;
 }

@@ -10,6 +10,7 @@ import time
 import qrcode
 import os
 import json  # 載入/儲存 authorized_users 使用
+from PIL import Image, ImageDraw, ImageFont
 import base64
 import numpy as np
 
@@ -165,6 +166,119 @@ def ensure_valid_google_token(f):
             return jsonify({'error': 'Google token invalid or refresh failed'}), 401
         return f(*args, **kwargs)
     return wrapper
+
+
+def generate_font_char_data_dict(text_to_convert: str, font_size: int):
+    """
+    將指定 TrueType 字體文件中的字符轉換為一個字典，
+    其中鍵是字符的 UTF-8 十六進制表示，值是其字形數據的字節列表。
+
+    參數:
+        text_to_convert (str): 包含所有需要轉換字符的字符串 (例如 "你好世界")。
+        font_size (int): 要使用的字體大小（像素）。
+
+    返回:
+        dict | None: 一個字典，格式為 {"utf8_hex_char": [byte_data_list]}，
+                     例如 {"e4bda0": [0x20, 0x88, ...]}。
+                     如果字體加載失敗或發生嚴重錯誤，則返回 None。
+    """
+    # 1. 將font_path寫死
+    font_path = "/home/peng/Downloads/unifont_jp-16.0.04.otf"
+
+    if not os.path.exists(font_path):
+        print(f"錯誤: 字體文件未找到於 '{font_path}'")
+        return None
+
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except IOError:
+        print(f"錯誤: 無法加載字體 '{font_path}'. 請確保它是有效的 TTF/OTF 文件。")
+        return None
+    except Exception as e:
+        print(f"加載字體時發生未知錯誤: {e}")
+        return None
+
+    # Determine actual glyph width and height
+    ascent, descent = font.getmetrics()
+    actual_glyph_height = ascent + descent
+
+    determined_width = 0
+    if text_to_convert:
+        try:
+            # 對於等寬字體，任何字符的寬度應該都一樣
+            # 我們取第一個字符的寬度作為代表
+            # getlength() 通常給出字符的推進寬度 (advance width)
+            determined_width = font.getlength(text_to_convert[0])
+        except AttributeError:  # Pillow < 8.0.0 的後備方案
+            bbox = font.getbbox(text_to_convert[0])
+            determined_width = bbox[2] - bbox[0]  # 使用墨跡寬度
+        except Exception as e:  # 其他可能的錯誤
+            print(f"獲取第一個字符 '{text_to_convert[0]}' 寬度時出錯: {e}")
+            bbox = font.getbbox(text_to_convert[0])  # 再次嘗試
+            determined_width = bbox[2] - bbox[0]
+    else:
+        # 如果CHARS為空，嘗試使用 'M' 或空格來獲取寬度
+        try:
+            determined_width = font.getlength('M')
+        except AttributeError:
+            bbox = font.getbbox('M')
+            determined_width = bbox[2] - bbox[0]
+        except Exception as e:
+            print(f"獲取 'M' 字符寬度時出錯: {e}")
+            bbox = font.getbbox('M')  # 再次嘗試
+            determined_width = bbox[2] - bbox[0]
+
+    actual_glyph_width = int(determined_width)
+    if actual_glyph_width == 0:
+        print(
+            f"警告: 無法確定字體寬度，可能字體文件 '{font_path}' 有問題或 text_to_convert 字符串為空且後備字符缺失。將使用 FONT_SIZE ({font_size}) 作為寬度。")
+        actual_glyph_width = font_size
+
+    if actual_glyph_width <= 0:  # 確保寬度為正
+        print(f"錯誤: 計算出的字形寬度 ({actual_glyph_width}) 無效。")
+        return None
+    if actual_glyph_height <= 0:  # 確保高度為正
+        print(f"錯誤: 計算出的字形高度 ({actual_glyph_height}) 無效。")
+        return None
+
+    bytes_per_row = (actual_glyph_width + 7) // 8
+
+    print(f"字體: {font_path}, 大小: {font_size}")
+    print(
+        f"計算出的字形尺寸: 寬度 = {actual_glyph_width}px, 高度 = {actual_glyph_height}px")
+    print(f"每行字節數: {bytes_per_row}")
+
+    char_data_map = {}
+
+    if not text_to_convert:
+        print("警告: text_to_convert 字符串為空，將生成空的字體數據字典。")
+        return {}  # 返回空字典
+
+    for char_code in text_to_convert:
+        image = Image.new(
+            "L", (actual_glyph_width, actual_glyph_height), 0)
+        draw = ImageDraw.Draw(image)
+        draw.text((0, 0), char_code, fill=255, font=font)
+
+        char_byte_list = []
+        for y in range(actual_glyph_height):
+            current_row_bytes = [0] * bytes_per_row
+            for x in range(actual_glyph_width):
+                pixel = image.getpixel((x, y))
+                if pixel > 128:
+                    byte_index = x // 8
+                    bit_index_in_byte = 7 - (x % 8)  # MSB first
+                    current_row_bytes[byte_index] |= (1 << bit_index_in_byte)
+
+            char_byte_list.extend(current_row_bytes)
+
+        # 3. 將輸出中的utf-8部份改為用hex code
+        utf8_bytes = char_code.encode('utf-8')
+        hex_key = utf8_bytes.hex()
+        char_data_map[hex_key] = char_byte_list
+
+    print(f"字體數據已生成，共 {len(char_data_map)} 個字符。")
+    return char_data_map
 
 
 @app.route("/ping")
@@ -359,7 +473,6 @@ def get_calendar_events():
         result.append({
             "summary": event.get("summary"),
             "start": event.get("start", {}).get("dateTime") or event.get("start", {}).get("date"),
-            "end": event.get("end", {}).get("dateTime") or event.get("end", {}).get("date"),
         })
     print(f"Found {len(result)} events for {date_str} in {username}'s calendar")
     return jsonify({"events": result})

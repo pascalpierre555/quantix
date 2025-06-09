@@ -1,10 +1,14 @@
+#include "cJSON.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
+#include "font_task.h"
 #include "net_task.h"
 #include "nvs.h"
 #include "ui_task.h"
 #include <freertos/FreeRTOS.h>
 #include <stdio.h>
+#include <stdlib.h> // For malloc, free
+#include <string.h> // For strlen
 #include <time.h>
 
 #define TAG "CALENDAR"
@@ -58,11 +62,30 @@ esp_err_t check_calendar_settings(void) {
 
 void calendarStartup_callback(net_event_t *event, esp_err_t result) {
     if (result == ESP_OK && event->json_root) {
-        ESP_LOGI(TAG, "HTTP response: %s", event->response_buffer);
-
+        cJSON *events_array = cJSON_GetObjectItemCaseSensitive(event->json_root, "events");
+        if (cJSON_IsArray(events_array) && cJSON_GetArraySize(events_array) > 0) {
+            cJSON *first_event = cJSON_GetArrayItem(events_array, 0);
+            if (cJSON_IsObject(first_event)) {
+                cJSON *summary_item = cJSON_GetObjectItemCaseSensitive(first_event, "summary");
+                if (cJSON_IsString(summary_item) && (summary_item->valuestring != NULL)) {
+                    const char *summary_utf8 = summary_item->valuestring;
+                    ESP_LOGI(TAG, "Original summary: %s", summary_utf8);
+                    char missing[256] = {0};
+                    find_missing_characters(summary_utf8, missing, sizeof(missing));
+                    ESP_LOGI(TAG, "Missing characters: %s", missing);
+                    download_missing_characters(missing);
+                } else {
+                    ESP_LOGW(TAG, "Summary item is not a string or is null.");
+                }
+            } else {
+                ESP_LOGW(TAG, "First event is not an object.");
+            }
+        } else {
+            ESP_LOGW(TAG, "Events array is not valid or empty.");
+        }
     } else {
-        ESP_LOGE(TAG, "Failed to parse JSON or HTTP error: %s",
-                 event->response_buffer ? event->response_buffer : "");
+        ESP_LOGE(TAG, "Failed to parse JSON or HTTP error. Response: %s",
+                 event->response_buffer ? event->response_buffer : "N/A");
     }
 }
 
