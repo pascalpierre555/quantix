@@ -154,7 +154,7 @@ void viewDisplay(void *PvParameters) {
                     Paint_DrawString_EN_Center(130, 0, 166, 70, displayStr, &Font16, WHITE, BLACK,
                                                5);
                     Paint_DrawString_EN_Center(130, 70, 166, 58, "Done", &Font12, BLACK, WHITE, 0);
-                    Paint_DrawBitMap_Paste(gImage_arrow, 191, 93, 12, 12, 1);
+                    Paint_DrawBitMap_Paste(gImage_arrow, 181, 93, 12, 12, 1);
                     EPD_2IN9_V2_Display(BlackImage);
                     view_current = event.event_id;
                     EPD_2IN9_V2_Sleep();

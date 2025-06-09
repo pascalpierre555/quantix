@@ -20,7 +20,7 @@
 
 extern EventGroupHandle_t input_event_group;
 
-void ec11_set_button_callback(void (*cb)(void));
+void ec11_set_button_callback(TaskHandle_t cb);
 void ec11_clean_button_callback(void);
 void ec11Startup(void *pvParameters);
 

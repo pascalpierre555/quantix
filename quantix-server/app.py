@@ -9,6 +9,7 @@ import secrets
 import time
 import qrcode
 import os
+import json  # 載入/儲存 authorized_users 使用
 import base64
 import numpy as np
 
@@ -17,10 +18,31 @@ def generate_session_token():
     return secrets.token_urlsafe(32)  # 一個很難猜的 token
 
 
+AUTHORIZED_USERS_FILE = "authorized_users.json"
 # 暫存 session tokens：key = token, value = 到期時間
 session_tokens = {}
 # key: username, value: dict (session_token, google info)
-authorized_users = {}
+# authorized_users 將由 load_authorized_users 初始化
+
+
+def load_authorized_users():
+    global authorized_users
+    try:
+        if os.path.exists(AUTHORIZED_USERS_FILE):
+            with open(AUTHORIZED_USERS_FILE, 'r') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    authorized_users = data
+                    return
+        authorized_users = {}
+    except (IOError, json.JSONDecodeError) as e:
+        print(f"錯誤：無法載入 {AUTHORIZED_USERS_FILE}: {e}。將使用空的 authorized_users。")
+        authorized_users = {}
+
+
+def save_authorized_users():
+    with open(AUTHORIZED_USERS_FILE, 'w') as f:
+        json.dump(authorized_users, f, indent=4)
 
 
 def store_session_token(token, valid_seconds=300):
@@ -67,6 +89,9 @@ def qr_to_c_array(data, box_size=1, border=0):
 
 app = Flask(__name__)
 
+authorized_users = {}  # 先定義
+load_authorized_users()  # 再從檔案載入
+
 load_dotenv()
 SECRET_KEY = os.getenv('SECRET_KEY')
 QUANTIX_USERNAME = os.getenv('QUANTIX_USERNAME')
@@ -96,6 +121,7 @@ def token_required(f):
 def ensure_google_token_valid(username):
     google_info = authorized_users.get(username, {}).get('google')
     if not google_info:
+        print(f"No Google token found for {username}")
         return False
     # 檢查是否過期
     if time.time() > google_info.get('expires_at', 0):
@@ -111,13 +137,20 @@ def ensure_google_token_valid(username):
                 "grant_type": "refresh_token"
             }
         )
+        print(
+            f"Refreshing token for {username}, status: {response.status_code}")
         if response.status_code == 200:
+            print(f"Token refresh response: {response.text}")
             token_data = response.json()
             google_info['access_token'] = token_data['access_token']
             google_info['expires_at'] = time.time(
             ) + token_data.get("expires_in", 3600)
+            save_authorized_users()  # 持久化更新後的 token
+            print(f"Token refreshed for {username}")
             return True
         else:
+            print(
+                f"Failed to refresh token for {username}, status: {response.status_code}, detail: {response.text}")
             return False
     return True
 
@@ -152,6 +185,7 @@ def login():
     if data['username'] not in authorized_users:
         authorized_users[data['username']] = {}
     authorized_users[data['username']]['jwt'] = token
+    save_authorized_users()  # 持久化
     return jsonify({'token': token})
 
 
@@ -162,6 +196,7 @@ def settings():
     store_session_token(session_token)
     username = g.current_user
     authorized_users[username]['session_token'] = session_token
+    save_authorized_users()  # 持久化
 
     auth_url = f"https://peng-pc.tail941dce.ts.net/oauth/setup?session_token={session_token}"
     c_array, w, h = qr_to_c_array(auth_url, box_size=1, border=0)
@@ -248,7 +283,7 @@ def oauth_callback():
         "refresh_token": refresh_token,
         "expires_at": time.time() + token_data.get("expires_in", 3600)  # expires_in 通常是 3600
     }
-
+    save_authorized_users()  # 持久化
     return f"""
     <h3>登入成功：{user_info.get("email")}</h3>
     <p>你可以關閉這個頁面</p>
@@ -313,6 +348,8 @@ def get_calendar_events():
     )
 
     if resp.status_code != 200:
+        print(
+            f"Google Calendar API error: {resp.status_code}, detail: {resp.text}")
         return jsonify({'error': 'Google Calendar API 失敗', 'detail': resp.text}), 500
 
     events = resp.json().get('items', [])
@@ -324,7 +361,7 @@ def get_calendar_events():
             "start": event.get("start", {}).get("dateTime") or event.get("start", {}).get("date"),
             "end": event.get("end", {}).get("dateTime") or event.get("end", {}).get("date"),
         })
-
+    print(f"Found {len(result)} events for {date_str} in {username}'s calendar")
     return jsonify({"events": result})
 
 

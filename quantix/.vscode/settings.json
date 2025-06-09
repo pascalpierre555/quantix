@@ -71,7 +71,9 @@
         "font_task.h": "c",
         "unity.h": "c",
         "esp_littlefs.h": "c",
-        "dirent.h": "c"
+        "dirent.h": "c",
+        "gpio.h": "c",
+        "base64.h": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"

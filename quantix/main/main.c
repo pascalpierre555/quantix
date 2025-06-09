@@ -35,6 +35,12 @@ void app_main() {
     } else {
         printf("Failed to create semaphore for screen.\r\n");
     }
+    xWifi = xSemaphoreCreateBinary();
+    if (xWifi != NULL) {
+        printf("Semaphore for wifi created successfully.\r\n");
+    } else {
+        printf("Failed to create semaphore for wifi.\r\n");
+    }
 
     // 創建所有任務
     xTaskCreate(screenStartup, "screenStartup", 4096, NULL, 5, NULL);

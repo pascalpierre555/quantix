@@ -18,7 +18,7 @@ typedef struct {
     volatile uint64_t sec_last_encoder_time_b;
     volatile uint8_t last_encoder_state_a;
     volatile uint8_t last_encoder_state_b;
-    void (*button_callback)(void);
+    TaskHandle_t button_callback;
 } ec11_handler_t;
 
 ec11_handler_t ec11_handler;
@@ -35,7 +35,7 @@ void ec11_init(ec11_handler_t *handler) {
     input_event_group = xEventGroupCreate();
 }
 
-void ec11_set_button_callback(void (*cb)(void)) { ec11_handler.button_callback = cb; }
+void ec11_set_button_callback(TaskHandle_t cb) { ec11_handler.button_callback = cb; }
 
 void ec11_clean_button_callback(void) { ec11_handler.button_callback = NULL; }
 
@@ -45,7 +45,7 @@ void IRAM_ATTR button_isr(void *arg) {
         ec11_handler.last_button_time = now;
         // xEventGroupSetBits(input_event_group, BUTTON_PRESSED_BIT);
         if (ec11_handler.button_callback) {
-            ec11_handler.button_callback(); // 呼叫 callback
+            vTaskNotifyGiveFromISR(ec11_handler.button_callback, NULL);
         }
     }
 }

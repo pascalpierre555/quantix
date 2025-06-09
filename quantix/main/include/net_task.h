@@ -5,10 +5,11 @@
 #include "esp_err.h"
 #include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "freertos/task.h"
 
-typedef enum { NET_CHECK_OK, NET_CHECK_FAIL } net_check_result_t;
-
+// 任務與事件旗標
+extern SemaphoreHandle_t xWifi;
 extern TaskHandle_t xServerCheckHandle;
 extern TaskHandle_t xServerLoginHandle;
 extern QueueHandle_t net_queue;
@@ -20,6 +21,7 @@ extern EventGroupHandle_t net_event_group;
 #define NET_TIME_AVAILABLE_BIT BIT3
 #define NET_GOOGLE_TOKEN_AVAILABLE_BIT BIT4
 
+// 網路事件結構
 typedef struct net_event_t {
     const char *url;                 // 請求的完整 URL
     esp_http_client_method_t method; // HTTP 方法
@@ -36,30 +38,17 @@ typedef struct net_event_t {
 // 公用網路 worker task
 void net_worker_task(void *pvParameters);
 
-// 伺服器連線檢查
-void server_check_task(void *pvParameters);
-static void server_check_callback(net_event_t *event, esp_err_t err);
-
 // 使用者設定下載
 void userSettings(void);
-static void user_settings_callback(net_event_t *event, esp_err_t err);
-
-// 登入
-void server_login(void *pvParameter);
-static void server_login_callback(net_event_t *event, esp_err_t err);
-
-// 驗證結果檢查
-void esp_check_auth_result(void);
-static void check_auth_result_callback(net_event_t *event, esp_err_t err);
 
 // 狀態檢查
-void statusCheck(void *pvParameters);
+void server_check(void);
 
 // 連線成功/失敗回呼
 void cb_connection_ok(void *pvParameter);
-void cb_button_wifi_settings(void);
+void cb_button_wifi_settings(void *pvParameters);
 void cb_button_continue_without_wifi(void);
-void cb_button_setting_done(void);
+void cb_button_setting_done(void *pvParameters);
 
 // 伺服器連線測試
 bool http_check_server_connectivity(esp_http_client_handle_t client);

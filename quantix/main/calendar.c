@@ -8,6 +8,7 @@
 #include <time.h>
 
 #define TAG "CALENDAR"
+#define CALENDAR_URL "https://peng-pc.tail941dce.ts.net/api/calendar"
 
 char year[5] = {0};  // 用於存儲年份
 char month[4] = {0}; // 用於存儲月份縮寫
@@ -55,6 +56,16 @@ esp_err_t check_calendar_settings(void) {
     return ESP_OK;
 }
 
+void calendarStartup_callback(net_event_t *event, esp_err_t result) {
+    if (result == ESP_OK && event->json_root) {
+        ESP_LOGI(TAG, "HTTP response: %s", event->response_buffer);
+
+    } else {
+        ESP_LOGE(TAG, "Failed to parse JSON or HTTP error: %s",
+                 event->response_buffer ? event->response_buffer : "");
+    }
+}
+
 void calendarStartup(void *pvParameters) {
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // 等待通知喚醒
@@ -67,7 +78,29 @@ void calendarStartup(void *pvParameters) {
             userSettings();
             ESP_LOGE(TAG, "Failed to read calendar settings");
         } else {
-            ESP_LOGI(TAG, "Calendar settings found, download calendar data.");
+            ESP_LOGI(TAG, "Calendar settings found, proceeding with calendar setup");
+            char post_data_buffer[27]; // 大小自己抓，不要爆掉
+            char date[11];
+            time_t now;
+            struct tm timeinfo;
+            time(&now);
+            localtime_r(&now, &timeinfo);
+            strftime(date, sizeof(date), "%Y-%m-%d", &timeinfo);
+            snprintf(post_data_buffer, sizeof(post_data_buffer), "{\"date\":\"%s\"}", date);
+            char responseBuffer[512] = {0}; // 確保有足夠的空間
+            net_event_t event = {
+                .url = CALENDAR_URL,
+                .method = HTTP_METHOD_POST,
+                .post_data = post_data_buffer,
+                .use_jwt = true,
+                .save_to_buffer = true,
+                .response_buffer = responseBuffer,
+                .response_buffer_size = sizeof(responseBuffer),
+                .on_finish = calendarStartup_callback,
+                .user_data = NULL,
+                .json_root = (void *)1,
+            };
+            xQueueSend(net_queue, &event, portMAX_DELAY);
         }
     }
 }
@@ -76,15 +109,9 @@ void ntpStartup(void *pvParameters) {
     xEventGroupWaitBits(net_event_group, NET_WIFI_CONNECTED_BIT, false, true, portMAX_DELAY);
 
     // 設定 NTP 伺服器
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, "pool.ntp.org");
-    sntp_init();
-
-    char date[13];
-    get_today_date_string(date, sizeof(date));
-
-    ESP_LOGI(TAG, "Today's date: %s", date);
-
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
     xEventGroupSetBits(net_event_group, NET_TIME_AVAILABLE_BIT);
     vTaskDelete(NULL);
 }
