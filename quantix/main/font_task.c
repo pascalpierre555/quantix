@@ -1,4 +1,5 @@
 #include "font_task.h"
+#include "GUI_Paint.h"
 #include "esp_http_client.h"
 #include "esp_littlefs.h"
 #include "esp_log.h"
@@ -11,6 +12,30 @@
 #include <stdio.h>
 #include <string.h>
 
+static const char *TAG_FONT = "FONT_TASK";
+
+#define FONT_DIR_LEN (sizeof(FONT_DIR) - 1)
+#define HASH_TABLE_SIZE 512
+#define FONT_DOWNLOAD_BUFFER_SIZE 2048 // Adjust if necessary
+
+typedef struct {
+    char hex_key[HEX_KEY_LEN]; // hex 字串
+    uint8_t data[FONT_SIZE];
+} FontEntry;
+
+// hash table 結構
+typedef struct {
+    char hex_key[HEX_KEY_LEN];
+    int table_index; // 指向 font_table 的 index
+    bool used;
+} FontHashEntry;
+
+int font_table_count = 0;
+
+static char font_download_response_buffer[FONT_DOWNLOAD_BUFFER_SIZE];
+FontEntry font_table[MAX_FONTS];
+static FontHashEntry font_hash_table[HASH_TABLE_SIZE];
+
 // 將單一 UTF-8 字（最多 3 bytes）轉為固定 6 字元 hex 字串
 void utf8_to_hex(const char *utf8, char *hex_out, size_t hex_out_size) {
     // 取最多 3 bytes
@@ -22,28 +47,6 @@ void utf8_to_hex(const char *utf8, char *hex_out, size_t hex_out_size) {
     // 固定輸出 6 字元
     snprintf(hex_out, hex_out_size, "%02x%02x%02x", bytes[0], bytes[1], bytes[2]);
 }
-
-#define FONT_DIR_LEN (sizeof(FONT_DIR) - 1)
-static const char *TAG_FONT = "FONT_TASK";
-
-typedef struct {
-    char hex_key[HEX_KEY_LEN]; // hex 字串
-    uint8_t data[FONT_SIZE];
-} FontEntry;
-
-#define HASH_TABLE_SIZE 4096
-
-FontEntry font_table[MAX_FONTS];
-int font_table_count = 0;
-
-// hash table 結構
-typedef struct {
-    char hex_key[HEX_KEY_LEN];
-    int table_index; // 指向 font_table 的 index
-    bool used;
-} FontHashEntry;
-
-static FontHashEntry font_hash_table[HASH_TABLE_SIZE];
 
 // hash function
 static unsigned int hash_hex(const char *hex) {
@@ -107,49 +110,51 @@ void font_table_init(void) {
         return;
     }
 
-    while ((entry = readdir(dir)) != NULL && font_table_count < MAX_FONTS) {
-        if (entry->d_type != DT_REG)
-            continue;
+    // while ((entry = readdir(dir)) != NULL && font_table_count < MAX_FONTS) {
+    //     if (entry->d_type != DT_REG)
+    //         continue;
 
-        char hex[HEX_KEY_LEN];
-        strncpy(hex, entry->d_name, HEX_KEY_LEN - 1);
-        hex[HEX_KEY_LEN - 1] = '\0';
+    //     char hex[HEX_KEY_LEN];
+    //     strncpy(hex, entry->d_name, HEX_KEY_LEN - 1);
+    //     hex[HEX_KEY_LEN - 1] = '\0';
 
-        char path[272];
-        snprintf(path, sizeof(path), "%s/%s", FONT_DIR, entry->d_name);
-        FILE *fp = fopen(path, "rb");
-        if (!fp)
-            continue;
+    //     char path[272];
+    //     snprintf(path, sizeof(path), "%s/%s", FONT_DIR, entry->d_name);
+    //     FILE *fp = fopen(path, "rb");
+    //     if (!fp)
+    //         continue;
 
-        FontEntry *e = &font_table[font_table_count];
-        strcpy(e->hex_key, hex);
-        fread(e->data, 1, FONT_SIZE, fp);
-        fclose(fp);
+    //     FontEntry *e = &font_table[font_table_count];
+    //     strcpy(e->hex_key, hex);
+    //     fread(e->data, 1, FONT_SIZE, fp);
+    //     fclose(fp);
 
-        // 插入 hash table
-        font_hash_insert(hex, font_table_count);
+    //     // 插入 hash table
+    //     font_hash_insert(hex, font_table_count);
 
-        font_table_count++;
-    }
+    //     font_table_count++;
+    // }
 
     closedir(dir);
     ESP_LOGI(TAG_FONT, "Loaded %d fonts from LittleFS into table.", font_table_count);
 }
 
-bool font_exists(const char *utf8_char) {
-    char hex[HEX_KEY_LEN];
-    utf8_to_hex(utf8_char, hex, sizeof(hex));
-    return font_hash_find(hex) >= 0;
-}
-
 // 取得 str 中所有未存在的字，所有缺字 hex 串接成一個字串
 int find_missing_characters(const char *str, char *missing, int missing_buffer_size) {
+    if (strlen(str) > HASH_TABLE_SIZE - font_table_count) {
+        memset(font_hash_table, 0, sizeof(font_hash_table));
+        ESP_LOGI(TAG_FONT, "Font hash table cleared.");
+    }
     int missing_chars_count = 0;
     missing[0] = '\0'; // 初始化為空字串
     size_t current_missing_hex_len = 0;
     const size_t single_hex_key_len = HEX_KEY_LEN - 1; // Length of "xxxxxx"
 
+    char utf8_char_bytes[5];          // Max 4 bytes for UTF-8 char + null terminator
+    char hex_key_output[HEX_KEY_LEN]; // Buffer for "xxxxxx\0"
+
     while (*str) {
+        memset(utf8_char_bytes, 0, sizeof(utf8_char_bytes));
         int len = 1;
         // Determine UTF-8 character length
         if ((*str & 0xF0) == 0xF0) { // 4-byte UTF-8
@@ -161,40 +166,92 @@ int find_missing_characters(const char *str, char *missing, int missing_buffer_s
         }
         // else len = 1 for ASCII or invalid sequence start byte
 
-        char utf8_char_bytes[5] = {0}; // Max 4 bytes for UTF-8 char + null terminator
         memcpy(utf8_char_bytes, str, len);
 
         // Skip English alphabet and digits
         if (len == 1) {
             char c = utf8_char_bytes[0];
-            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+            if (c >= ' ' && c <= '~') {
                 str += len;
                 continue; // Skip this character
             }
         }
 
-        if (!font_exists(utf8_char_bytes)) {
+        // 1. Convert current UTF-8 char to hex
+        utf8_to_hex(utf8_char_bytes, hex_key_output, sizeof(hex_key_output));
+
+        // 2. Check if font is already in RAM cache
+        if (font_hash_find(hex_key_output) >= 0) {
+            str += len;
+            continue; // Already in RAM
+        }
+
+        // 3. Font not in RAM, check LittleFS
+        char lfs_font_path[FONT_DIR_LEN + 1 /* / */ + (HEX_KEY_LEN - 1) /* xxxxxx */ + 1 /* \0 */];
+        snprintf(lfs_font_path, sizeof(lfs_font_path), "%s/%s", FONT_DIR, hex_key_output);
+
+        FILE *fp = fopen(lfs_font_path, "rb");
+        if (fp) { // Font exists on LittleFS
+            if (font_table_count < MAX_FONTS) {
+                // Load from LittleFS to RAM
+                FontEntry *e = &font_table[font_table_count];
+                strcpy(e->hex_key, hex_key_output); // hex_key_output is already null-terminated
+                size_t bytes_read = fread(e->data, 1, FONT_SIZE, fp);
+                fclose(fp);
+
+                if (bytes_read == FONT_SIZE) {
+                    font_hash_insert(hex_key_output, font_table_count);
+                    font_table_count++;
+                    ESP_LOGI(TAG_FONT,
+                             "Loaded font %s (%s) from LittleFS to RAM. Cache size: %d/%d",
+                             utf8_char_bytes, hex_key_output, font_table_count, MAX_FONTS);
+                } else {
+                    ESP_LOGE(TAG_FONT,
+                             "Failed to read full font data for %s from %s. Read %zu bytes. Adding "
+                             "to missing list.",
+                             hex_key_output, lfs_font_path, bytes_read);
+                    // Font file might be corrupted or incomplete. Treat as missing for download.
+                    if (current_missing_hex_len + single_hex_key_len + 1 <=
+                        (size_t)missing_buffer_size) {
+                        strcat(missing, hex_key_output);
+                        current_missing_hex_len += single_hex_key_len;
+                        missing_chars_count++;
+                    } else {
+                        ESP_LOGW(TAG_FONT, "Missing characters hex string buffer full when adding "
+                                           "corrupted LFS font.");
+                    }
+                }
+            } else { // RAM cache is full
+                fclose(fp);
+                ESP_LOGI(TAG_FONT,
+                         "Font %s (%s) on LittleFS, but RAM cache full (MAX_FONTS=%d). Not loading "
+                         "to RAM.",
+                         utf8_char_bytes, hex_key_output, MAX_FONTS);
+                // Font exists on disk, so it's not "missing" for download purposes.
+            }
+            str += len;
+            continue; // Processed this char (either loaded to RAM or found on LFS but RAM full)
+        }
+
+        // 4. Font not in RAM and not on LittleFS - truly missing
+        ESP_LOGI(TAG_FONT, "Font %s (%s) not in RAM or LittleFS. Adding to download list.",
+                 utf8_char_bytes, hex_key_output);
+        if (current_missing_hex_len + single_hex_key_len + 1 <= (size_t)missing_buffer_size) {
             // Check if there's enough space in the missing buffer for one more hex key + null
             // terminator
-            if (current_missing_hex_len + single_hex_key_len + 1 <= missing_buffer_size) {
-                char hex_key_output[HEX_KEY_LEN]; // Buffer for "xxxxxx\0"
-                utf8_to_hex(utf8_char_bytes, hex_key_output, sizeof(hex_key_output));
-                strcat(missing, hex_key_output); // Append the 6 hex characters
-                current_missing_hex_len += single_hex_key_len;
-                missing_chars_count++;
-            } else {
-                ESP_LOGW(TAG_FONT, "Missing characters hex string buffer full. Cannot add more.");
-                break; // Stop if buffer is full
-            }
+            strcat(missing, hex_key_output); // Append the 6 hex characters
+            current_missing_hex_len += single_hex_key_len;
+            missing_chars_count++;
+        } else {
+            ESP_LOGW(TAG_FONT, "Missing characters hex string buffer full. Cannot add more.");
+            // Do not break; continue processing the rest of str to allow LFS loading for other
+            // chars
         }
 
         str += len;
     }
     return missing_chars_count;
 }
-
-#define FONT_DOWNLOAD_BUFFER_SIZE 2048 // Adjust if necessary
-static char font_download_response_buffer[FONT_DOWNLOAD_BUFFER_SIZE];
 
 static void font_download_callback(net_event_t *event, esp_err_t result) {
     if (result == ESP_OK && event->json_root) {
@@ -268,6 +325,9 @@ static void font_download_callback(net_event_t *event, esp_err_t result) {
         }
     }
 }
+
+void Paint_DrawString_CN_RAM(UWORD x_start, UWORD y_start, UWORD area_width, UWORD area_height,
+                             const char *text, sFONT *font, UWORD fg, UWORD bg) {}
 
 // Queues a request to download missing font characters.
 esp_err_t download_missing_characters(const char *missing_chars) {

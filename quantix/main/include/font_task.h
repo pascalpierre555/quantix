@@ -3,7 +3,7 @@
 
 #include <esp_err.h>
 
-#define FONT_DIR "/fonts"
+#define FONT_DIR "/littlefs/fonts"
 #define FONT_SIZE 44
 #define MAX_FONTS 512
 #define HEX_KEY_LEN 8

@@ -73,7 +73,8 @@
         "esp_littlefs.h": "c",
         "dirent.h": "c",
         "gpio.h": "c",
-        "base64.h": "c"
+        "base64.h": "c",
+        "stdbool.h": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"

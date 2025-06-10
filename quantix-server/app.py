@@ -494,6 +494,7 @@ def get_calendar_events():
         result.append({
             "summary": event.get("summary"),
             "start": event.get("start", {}).get("dateTime") or event.get("start", {}).get("date"),
+            "end": event.get("end", {}).get("dateTime") or event.get("end", {}).get("date"),
         })
     print(f"Found {len(result)} events for {date_str} in {username}'s calendar")
     return jsonify({"events": result})
