@@ -180,12 +180,14 @@ esp_err_t save_event_for_date(const char *date_yyyymmdd, const cJSON *event_json
 
     size_t written = fwrite(updated_content, 1, strlen(updated_content), f);
     fclose(f);
-    free(updated_content);
 
     if (written != strlen(updated_content)) {
+        ESP_LOGI(TAG, "written = %d, strlen(updated_content) = %d, updated content: %s", written,
+                 strlen(updated_content), updated_content);
         ESP_LOGE(TAG, "Failed to write complete content to %s", file_path);
         return ESP_FAIL;
     }
+    free(updated_content);
 
     if (!event_exists) {
         ESP_LOGI(TAG, "Saved new event to %s", file_path);
@@ -284,61 +286,52 @@ void collect_event_data_callback(net_event_t *event, esp_err_t result) {
                 // 2. Collect unique dates affected by this event
                 cJSON *start_item = cJSON_GetObjectItemCaseSensitive(event_scanner_json, "start");
                 cJSON *end_item = cJSON_GetObjectItemCaseSensitive(event_scanner_json, "end");
-                if (cJSON_IsObject(start_item) && cJSON_IsObject(end_item)) {
-                    cJSON *start_date_item_scan =
-                        cJSON_GetObjectItemCaseSensitive(start_item, "date");
-                    cJSON *end_date_item_scan = cJSON_GetObjectItemCaseSensitive(end_item, "date");
-                    cJSON *start_datetime_item_scan =
-                        cJSON_GetObjectItemCaseSensitive(start_item, "dateTime");
-                    cJSON *end_datetime_item_scan =
-                        cJSON_GetObjectItemCaseSensitive(end_item, "dateTime");
 
-                    const char *start_date_str_scan =
-                        cJSON_IsString(start_date_item_scan)
-                            ? start_date_item_scan->valuestring
-                            : (cJSON_IsString(start_datetime_item_scan)
-                                   ? start_datetime_item_scan->valuestring
-                                   : NULL);
-                    const char *end_date_str_scan = cJSON_IsString(end_date_item_scan)
-                                                        ? end_date_item_scan->valuestring
-                                                        : (cJSON_IsString(end_datetime_item_scan)
-                                                               ? end_datetime_item_scan->valuestring
-                                                               : NULL);
+                const char *start_date_str_scan = NULL;
+                if (start_item && cJSON_IsString(start_item)) {
+                    start_date_str_scan = start_item->valuestring;
+                }
 
-                    if (start_date_str_scan && end_date_str_scan) {
-                        struct tm start_tm_scan, end_tm_scan;
-                        if (parse_date_string(start_date_str_scan, &start_tm_scan) &&
-                            parse_date_string(end_date_str_scan, &end_tm_scan)) {
-                            time_t start_t_scan = mktime(&start_tm_scan);
-                            time_t end_t_scan = mktime(&end_tm_scan);
-                            if (start_t_scan != (time_t)-1 && end_t_scan != (time_t)-1) {
-                                for (time_t current_t_scan = start_t_scan;
-                                     current_t_scan <= end_t_scan; current_t_scan += 86400) {
-                                    struct tm current_tm_for_date_key;
-                                    localtime_r(&current_t_scan, &current_tm_for_date_key);
-                                    char date_key[11];
-                                    strftime(date_key, sizeof(date_key), "%Y-%m-%d",
-                                             &current_tm_for_date_key);
+                const char *end_date_str_scan = NULL;
+                if (end_item && cJSON_IsString(end_item)) {
+                    end_date_str_scan = end_item->valuestring;
+                }
 
-                                    bool found = false;
-                                    for (int i = 0; i < unique_dates_count; i++) {
-                                        if (strcmp(unique_dates[i], date_key) == 0) {
-                                            found = true;
-                                            break;
-                                        }
+                if (start_date_str_scan && end_date_str_scan) {
+                    struct tm start_tm_scan, end_tm_scan;
+                    if (parse_date_string(start_date_str_scan, &start_tm_scan) &&
+                        parse_date_string(end_date_str_scan, &end_tm_scan)) {
+                        time_t start_t_scan = mktime(&start_tm_scan);
+                        time_t end_t_scan = mktime(&end_tm_scan);
+                        if (start_t_scan != (time_t)-1 && end_t_scan != (time_t)-1) {
+                            for (time_t current_t_scan = start_t_scan; current_t_scan <= end_t_scan;
+                                 current_t_scan += 86400) {
+                                struct tm current_tm_for_date_key;
+                                localtime_r(&current_t_scan, &current_tm_for_date_key);
+                                char date_key[11];
+                                strftime(date_key, sizeof(date_key), "%Y-%m-%d",
+                                         &current_tm_for_date_key);
+
+                                bool found = false;
+                                for (int i = 0; i < unique_dates_count; i++) {
+                                    if (strcmp(unique_dates[i], date_key) == 0) {
+                                        found = true;
+                                        break;
                                     }
-                                    if (!found && unique_dates_count < MAX_UNIQUE_DATES_PER_FETCH) {
-                                        strcpy(unique_dates[unique_dates_count++], date_key);
-                                    } else if (!found) {
-                                        ESP_LOGW(TAG,
-                                                 "Max unique dates limit (%d) reached, cannot add "
-                                                 "%s for clearing.",
-                                                 MAX_UNIQUE_DATES_PER_FETCH, date_key);
-                                    }
+                                }
+                                if (!found && unique_dates_count < MAX_UNIQUE_DATES_PER_FETCH) {
+                                    strcpy(unique_dates[unique_dates_count++], date_key);
+                                } else if (!found) {
+                                    ESP_LOGW(TAG,
+                                             "Max unique dates limit (%d) reached, cannot add "
+                                             "%s for clearing.",
+                                             MAX_UNIQUE_DATES_PER_FETCH, date_key);
                                 }
                             }
                         }
                     }
+                } else {
+                    ESP_LOGW(TAG, "Event scanner: 'start' or 'end' field missing or not a string.");
                 }
             }
 
@@ -367,69 +360,66 @@ void collect_event_data_callback(net_event_t *event, esp_err_t result) {
                     continue;
                 }
 
+                cJSON *event_to_save = cJSON_Duplicate(event_json, true);
+                if (!event_to_save) {
+                    ESP_LOGE(TAG, "Failed to duplicate event_json for saving.");
+                    continue;
+                }
+
                 // Process summary for missing characters
                 // This was done in the first pass.
 
                 // Process dates and save event
-                cJSON *start_item = cJSON_GetObjectItemCaseSensitive(event_json, "start");
-                cJSON *end_item = cJSON_GetObjectItemCaseSensitive(event_json, "end");
+                cJSON *start_val_item = cJSON_GetObjectItemCaseSensitive(event_json, "start");
+                cJSON *end_val_item = cJSON_GetObjectItemCaseSensitive(event_json, "end");
 
-                if (cJSON_IsObject(start_item) && cJSON_IsObject(end_item)) {
-                    // Prioritize 'date' for all-day events, otherwise use 'dateTime'
-                    cJSON *start_date_item = cJSON_GetObjectItemCaseSensitive(start_item, "date");
-                    cJSON *end_date_item = cJSON_GetObjectItemCaseSensitive(end_item, "date");
-                    cJSON *start_datetime_item =
-                        cJSON_GetObjectItemCaseSensitive(start_item, "dateTime");
-                    cJSON *end_datetime_item =
-                        cJSON_GetObjectItemCaseSensitive(end_item, "dateTime");
+                const char *start_date_str = NULL;
+                if (start_val_item && cJSON_IsString(start_val_item)) {
+                    start_date_str = start_val_item->valuestring;
+                }
 
-                    const char *start_date_str = cJSON_IsString(start_date_item)
-                                                     ? start_date_item->valuestring
-                                                     : (cJSON_IsString(start_datetime_item)
-                                                            ? start_datetime_item->valuestring
-                                                            : NULL);
-                    const char *end_date_str =
-                        cJSON_IsString(end_date_item)
-                            ? end_date_item->valuestring
-                            : (cJSON_IsString(end_datetime_item) ? end_datetime_item->valuestring
-                                                                 : NULL);
+                const char *end_date_str = NULL;
+                if (end_val_item && cJSON_IsString(end_val_item)) {
+                    end_date_str = end_val_item->valuestring;
+                }
 
-                    if (start_date_str && end_date_str) {
-                        struct tm start_tm, end_tm;
-                        // Parse dates. Note: strptime handles both YYYY-MM-DD and
-                        // YYYY-MM-DDTHH:MM:SS formats
-                        if (parse_date_string(start_date_str, &start_tm) &&
-                            parse_date_string(end_date_str, &end_tm)) {
-                            // Convert struct tm to time_t for easier date arithmetic
-                            time_t start_t = mktime(&start_tm);
-                            time_t end_t = mktime(&end_tm);
-                            printf("start_t: %lld, end_t: %lld\n", start_t, end_t);
+                if (start_date_str && end_date_str) {
+                    struct tm start_tm, end_tm;
+                    // Parse dates. Note: strptime handles both YYYY-MM-DD and
+                    // YYYY-MM-DDTHH:MM:SS formats
+                    if (parse_date_string(start_date_str, &start_tm) &&
+                        parse_date_string(end_date_str, &end_tm)) {
 
-                            if (start_t != (time_t)-1 && end_t != (time_t)-1) {
-                                for (time_t current_t = start_t; current_t <= end_t;
-                                     current_t += 86400) {
-                                    struct tm current_tm_for_save;
-                                    localtime_r(&current_t, &current_tm_for_save);
-                                    char date_yyyymmdd[11];
-                                    if (strftime(date_yyyymmdd, sizeof(date_yyyymmdd), "%Y-%m-%d",
-                                                 &current_tm_for_save) > 0) {
-                                        save_event_for_date(date_yyyymmdd, event_json);
-                                    } else {
-                                        ESP_LOGE(TAG, "Failed to format date for saving event.");
-                                    }
+                        // Convert struct tm to time_t for easier date arithmetic
+                        time_t start_t = mktime(&start_tm);
+                        time_t end_t = mktime(&end_tm);
+
+                        if (start_t != (time_t)-1 && end_t != (time_t)-1) {
+                            for (time_t current_t = start_t; current_t <= end_t;
+                                 current_t += 86400) {
+                                struct tm current_tm_for_save;
+                                localtime_r(&current_t, &current_tm_for_save);
+                                char date_yyyymmdd[11];
+                                if (strftime(date_yyyymmdd, sizeof(date_yyyymmdd), "%Y-%m-%d",
+                                             &current_tm_for_save) > 0) {
+                                    save_event_for_date(date_yyyymmdd, event_to_save);
+                                } else {
+                                    ESP_LOGE(TAG, "Failed to format date for saving event.");
                                 }
-                            } else {
-                                ESP_LOGE(TAG, "Failed to convert parsed dates to time_t.");
                             }
                         } else {
-                            ESP_LOGE(
-                                TAG,
-                                "Failed to parse start or end date string for event (save pass).");
+                            ESP_LOGE(TAG, "Failed to convert parsed dates to time_t.");
                         }
                     } else {
-                        ESP_LOGW(TAG, "Event missing start or end date/dateTime string.");
+                        ESP_LOGE(TAG,
+                                 "Failed to parse start or end date string for event (save pass).");
                     }
+                } else {
+                    ESP_LOGW(
+                        TAG,
+                        "Event missing 'start' or 'end' string fields, or they are not strings.");
                 }
+                cJSON_Delete(event_to_save); // Clean up the duplicated event
             } // End cJSON_ArrayForEach
             // After processing all events, download missing characters if any
             download_missing_characters(missing_chars_total);

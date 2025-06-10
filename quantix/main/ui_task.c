@@ -44,7 +44,7 @@ static char setting_qrcode[256];
     (EPD_2IN9_V2_HEIGHT - CALENDAR_EVENT_LIST_Y - 5) // 5px bottom padding
 #define CALENDAR_EVENT_LINE_SPACING 2
 
-static sFONT *calendar_event_font = &Font12; // Font for event summaries
+static sFONT *calendar_event_font = &Font16; // Font for event summaries
 
 void setting_qrcode_setting(char *qrcode) {
     if (qrcode != NULL && strlen(qrcode) < sizeof(setting_qrcode)) {

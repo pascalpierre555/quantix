@@ -61,6 +61,16 @@ void app_main() {
         } else {
             ESP_LOGI("APP_MAIN", "Font directory %s already exists.", FONT_DIR);
         }
+        // 檢查並創建日曆目錄
+        if (stat(CALENDAR_DIR, &st) == -1) {
+            ESP_LOGI("APP_MAIN", "Calendar directory %s not found, creating...", CALENDAR_DIR);
+            if (mkdir(CALENDAR_DIR, 0755) != 0) {
+                ESP_LOGE("APP_MAIN", "Failed to create calendar directory %s: %s", CALENDAR_DIR,
+                         strerror(errno));
+            } else {
+                ESP_LOGI("APP_MAIN", "Calendar directory %s created successfully.", CALENDAR_DIR);
+            }
+        }
     }
 
     gui_queue = xQueueCreate(EVENT_QUEUE_LENGTH, EVENT_QUEUE_ITEM_SIZE);
