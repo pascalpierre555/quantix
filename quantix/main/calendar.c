@@ -487,7 +487,7 @@ void collect_event_data(time_t time) {
         .response_buffer_size = sizeof(calendar_api_response_buffer),
         .on_finish = collect_event_data_callback,
         .user_data = date_for_ui_event, // Pass the date string for the UI
-        .json_root = (void *)1,
+        .json_parse = 1,
     };
     xQueueSend(net_queue, &event, portMAX_DELAY);
 }

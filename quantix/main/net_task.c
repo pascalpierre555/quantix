@@ -104,6 +104,7 @@ void net_worker_task(void *pvParameters) {
             int failure_count = 0;
             int success_count = 0;
             const int max_backoff_ms = MAX_BACKOFF_MS;
+            esp_err_t err; // Initialize err for this attempt
             while (1) {
                 xSemaphoreTake(xWifi, portMAX_DELAY);
                 // 設定 HTTP config
@@ -117,6 +118,7 @@ void net_worker_task(void *pvParameters) {
                     .cert_pem = isrgrootx1_pem_start,
                     .user_data = event.save_to_buffer ? event.response_buffer : NULL,
                 };
+                err = ESP_OK;
                 esp_http_client_handle_t client = esp_http_client_init(&config);
 
                 if (event.use_jwt) {
@@ -130,7 +132,6 @@ void net_worker_task(void *pvParameters) {
                 esp_http_client_set_header(client, "Content-Type", "application/json");
                 esp_http_client_set_header(client, "Accept-Encoding", "identity");
 
-                esp_err_t err = ESP_FAIL; // Initialize err for this attempt
                 int post_len = 0;
                 if (event.method == HTTP_METHOD_POST && event.post_data) {
                     post_len = strlen(event.post_data);
@@ -216,7 +217,7 @@ void net_worker_task(void *pvParameters) {
                                             } else {
                                                 ESP_LOGW(TAG, "Connection closed prematurely "
                                                               "(chunked/unknown)");
-                                                // err = ESP_FAIL; // Optional: treat as error if
+                                                err = ESP_FAIL; // Optional: treat as error if
                                                 // data is incomplete
                                                 break;
                                             }
@@ -236,7 +237,7 @@ void net_worker_task(void *pvParameters) {
                 xSemaphoreGive(xWifi);         // Release semaphore AFTER all
 
                 // 自動解析 JSON
-                if (err == ESP_OK && event.json_root != NULL && event.response_buffer) {
+                if (err == ESP_OK && event.json_parse && event.response_buffer) {
                     cJSON *parsed_json = cJSON_Parse(event.response_buffer);
                     if (!parsed_json) {
                         ESP_LOGW(TAG, "Failed to parse JSON from response: %s",
@@ -256,10 +257,6 @@ void net_worker_task(void *pvParameters) {
                 } else {
                     failure_count++;
                     should_retry = (try_count < max_retry);
-                }
-
-                if (event.on_finish) {
-                    event.on_finish(&event, err);
                 }
 
                 esp_http_client_cleanup(client);
@@ -286,6 +283,9 @@ void net_worker_task(void *pvParameters) {
                          max_retry, delay_ms);
                 vTaskDelay(delay_ms / portTICK_PERIOD_MS);
                 try_count++;
+            }
+            if (event.on_finish) {
+                event.on_finish(&event, err);
             }
         }
     }
@@ -382,7 +382,7 @@ void cb_button_setting_done(void *pvParameters) {
         .response_buffer_size = sizeof(responseBuffer),
         .on_finish = check_auth_result_callback,
         .user_data = NULL,
-        .json_root = (void *)1,
+        .json_parse = 1,
     };
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -411,8 +411,8 @@ static void server_check_callback(net_event_t *event, esp_err_t err) {
         }
         cJSON_Delete(event->json_root);
     } else {
-        ESP_LOGE(TAG, "Login failed or JSON parse error: %s",
-                 event->response_buffer ? event->response_buffer : "");
+        ESP_LOGE(TAG, "Login failed or JSON parse error: %s, err: %d",
+                 event->response_buffer ? event->response_buffer : "", err);
         xEventGroupClearBits(net_event_group, NET_SERVER_CONNECTED_BIT);
         event_t ev = {
             .event_id = SCREEN_EVENT_NO_CONNECTION,
@@ -502,7 +502,7 @@ void server_check(void) {
         .response_buffer_size = sizeof(responseBuffer),
         .on_finish = server_check_callback,
         .user_data = NULL,
-        .json_root = (void *)1,
+        .json_parse = 1,
     };
     xQueueSend(net_queue, &event, portMAX_DELAY);
 }
@@ -521,7 +521,7 @@ void userSettings(void) {
             .response_buffer_size = sizeof(responseBuffer),
             .on_finish = user_settings_callback,
             .user_data = NULL,
-            .json_root = (void *)1, // 只要不是NULL就會自動parse
+            .json_parse = 1, // 只要不是NULL就會自動parse
         };
         xQueueSend(net_queue, &event, portMAX_DELAY);
     } else {

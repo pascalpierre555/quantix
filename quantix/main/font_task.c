@@ -434,7 +434,7 @@ esp_err_t download_missing_characters(const char *missing_chars) {
         .response_buffer_size = sizeof(font_download_response_buffer),
         .on_finish = font_download_callback,
         .user_data = NULL,
-        .json_root = (void *)1, // Request net_worker_task to parse JSON
+        .json_parse = 1, // Request net_worker_task to parse JSON
     };
 
     // Ensure font_download_response_buffer is clean before use
