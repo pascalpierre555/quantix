@@ -174,8 +174,9 @@ def generate_font_char_data_dict(text_to_convert: str, font_size: int):
     其中鍵是字符的 UTF-8 十六進制表示，值是其字形數據的字節列表。
 
     參數:
-        text_to_convert (str): 包含所有需要轉換字符的字符串 (例如 "你好世界")。
+        text_to_convert (str): 包含所有需要轉換字符的 UTF-8 十六進制編碼串接字符串 (例如 "e4bda0e5a5bde4b896e7958c" 代表 "你好世界")。
         font_size (int): 要使用的字體大小（像素）。
+
 
     返回:
         dict | None: 一個字典，格式為 {"utf8_hex_char": [byte_data_list]}，
@@ -183,7 +184,7 @@ def generate_font_char_data_dict(text_to_convert: str, font_size: int):
                      如果字體加載失敗或發生嚴重錯誤，則返回 None。
     """
     # 1. 將font_path寫死
-    font_path = "/home/peng/Downloads/unifont_jp-16.0.04.otf"
+    font_path = "./unifont_jp-16.0.04.otf"
 
     if not os.path.exists(font_path):
         print(f"錯誤: 字體文件未找到於 '{font_path}'")
@@ -203,35 +204,43 @@ def generate_font_char_data_dict(text_to_convert: str, font_size: int):
     actual_glyph_height = ascent + descent
 
     determined_width = 0
+    char_to_measure = 'M'  # Default character for measurement
+
     if text_to_convert:
+        first_hex_sequence = text_to_convert[0:6]
+        if len(first_hex_sequence) == 6:
+            try:
+                first_char_bytes = bytes.fromhex(first_hex_sequence)
+                char_to_measure = first_char_bytes.decode('utf-8')
+            except (ValueError, UnicodeDecodeError) as e:
+                print(
+                    f"警告: 無法解碼第一個十六進制序列 '{first_hex_sequence}': {e}。將使用 'M' 進行寬度測量。")
+        else:
+            print(f"警告: text_to_convert 開頭不是一個完整的6字符十六進制序列。將使用 'M' 進行寬度測量。")
+
+    # Measure width using char_to_measure
+    try:
+        # 對於等寬字體，任何字符的寬度應該都一樣
+        # getlength() 通常給出字符的推進寬度 (advance width)
+        determined_width = font.getlength(char_to_measure)
+    except AttributeError:  # Pillow < 8.0.0 的後備方案
+        bbox = font.getbbox(char_to_measure)
+        determined_width = bbox[2] - bbox[0]  # 使用墨跡寬度
+    except Exception as e:  # 其他可能的錯誤
+        print(f"獲取字符 '{char_to_measure}' 寬度時出錯: {e}")
+        # 再次嘗試獲取 'M' 的邊界框作為最終後備
         try:
-            # 對於等寬字體，任何字符的寬度應該都一樣
-            # 我們取第一個字符的寬度作為代表
-            # getlength() 通常給出字符的推進寬度 (advance width)
-            determined_width = font.getlength(text_to_convert[0])
-        except AttributeError:  # Pillow < 8.0.0 的後備方案
-            bbox = font.getbbox(text_to_convert[0])
-            determined_width = bbox[2] - bbox[0]  # 使用墨跡寬度
-        except Exception as e:  # 其他可能的錯誤
-            print(f"獲取第一個字符 '{text_to_convert[0]}' 寬度時出錯: {e}")
-            bbox = font.getbbox(text_to_convert[0])  # 再次嘗試
-            determined_width = bbox[2] - bbox[0]
-    else:
-        # 如果CHARS為空，嘗試使用 'M' 或空格來獲取寬度
-        try:
-            determined_width = font.getlength('M')
-        except AttributeError:
             bbox = font.getbbox('M')
             determined_width = bbox[2] - bbox[0]
-        except Exception as e:
-            print(f"獲取 'M' 字符寬度時出錯: {e}")
-            bbox = font.getbbox('M')  # 再次嘗試
-            determined_width = bbox[2] - bbox[0]
+        except Exception as e_fallback:
+            print(f"獲取 'M' 字符寬度作為後備時也出錯: {e_fallback}")
+            # 如果一切都失敗了，就用 font_size
+            determined_width = font_size
 
     actual_glyph_width = int(determined_width)
     if actual_glyph_width == 0:
         print(
-            f"警告: 無法確定字體寬度，可能字體文件 '{font_path}' 有問題或 text_to_convert 字符串為空且後備字符缺失。將使用 FONT_SIZE ({font_size}) 作為寬度。")
+            f"警告: 無法確定字體寬度。將使用 FONT_SIZE ({font_size}) 作為寬度。")
         actual_glyph_width = font_size
 
     if actual_glyph_width <= 0:  # 確保寬度為正
@@ -254,11 +263,25 @@ def generate_font_char_data_dict(text_to_convert: str, font_size: int):
         print("警告: text_to_convert 字符串為空，將生成空的字體數據字典。")
         return {}  # 返回空字典
 
-    for char_code in text_to_convert:
+    # 以6個字符為一組（一個UTF-8字符的hex表示）進行迭代
+    for i in range(0, len(text_to_convert), 6):
+        hex_key = text_to_convert[i:i+6]
+
+        if len(hex_key) < 6:
+            print(f"警告: 發現不完整的十六進制序列 '{hex_key}'，將跳過。")
+            continue
+
+        try:
+            char_bytes_to_render = bytes.fromhex(hex_key)
+            char_code_to_render = char_bytes_to_render.decode('utf-8')
+        except (ValueError, UnicodeDecodeError) as e:
+            print(f"錯誤: 無法將十六進制 '{hex_key}' 解碼為UTF-8字符: {e}。將跳過此字符。")
+            continue
+
         image = Image.new(
             "L", (actual_glyph_width, actual_glyph_height), 0)
         draw = ImageDraw.Draw(image)
-        draw.text((0, 0), char_code, fill=255, font=font)
+        draw.text((0, 0), char_code_to_render, fill=255, font=font)
 
         char_byte_list = []
         for y in range(actual_glyph_height):
@@ -272,9 +295,7 @@ def generate_font_char_data_dict(text_to_convert: str, font_size: int):
 
             char_byte_list.extend(current_row_bytes)
 
-        # 3. 將輸出中的utf-8部份改為用hex code
-        utf8_bytes = char_code.encode('utf-8')
-        hex_key = utf8_bytes.hex()
+        # hex_key 已經是當前處理的字符的十六進制表示
         char_data_map[hex_key] = char_byte_list
 
     print(f"字體數據已生成，共 {len(char_data_map)} 個字符。")
@@ -478,21 +499,13 @@ def get_calendar_events():
     return jsonify({"events": result})
 
 
-font_data = {
-    "e4bda0": [0x00, 0x00, 0x00, 0x00, 0x1D, 0xC0, 0x3B, 0xFF],
-    "e5a5bd": [0x00, 0x00, 0x73, 0xFF, 0xFE, 0x1E, 0x6E, 0x38],
-}
-
-
 @app.route("/font")
 def get_font():
     chars = request.args.get("chars", "")
-    result = {}
-    # 每 6 個字元為一組 hex code
-    for i in range(0, len(chars), 6):
-        hex_code = chars[i:i+6]
-        if hex_code in font_data:
-            result[hex_code] = font_data[hex_code]
+    # font_size = int(request.args.get("size", 16)) # 允許客戶端指定字體大小，預設為16
+    result = generate_font_char_data_dict(chars, 16)
+    if result is None:
+        return jsonify({"error": "Failed to generate font data"}), 500
     return jsonify(result)
 
 

@@ -198,6 +198,7 @@ static char font_download_response_buffer[FONT_DOWNLOAD_BUFFER_SIZE];
 
 static void font_download_callback(net_event_t *event, esp_err_t result) {
     if (result == ESP_OK && event->json_root) {
+        ESP_LOGI(TAG_FONT, "Response: %s", event->response_buffer);
         ESP_LOGI(TAG_FONT, "Font download successful, processing JSON response.");
         cJSON *font_item = NULL;
         int saved_count = 0;
