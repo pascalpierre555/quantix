@@ -449,6 +449,7 @@ def get_stock():
 @ensure_valid_google_token
 def get_calendar_events():
     username = g.current_user
+
     google_info = authorized_users[username].get('google')
     if not google_info:
         return jsonify({'error': 'Google 未授權'}), 403
@@ -456,6 +457,7 @@ def get_calendar_events():
     data = request.json
     date_str = data.get('date')  # 期望格式：'YYYY-MM-DD'
     if not date_str:
+        print(f"Unauthorized access attempt by {username}")
         return jsonify({'error': '請提供日期'}), 400
 
     # 產生 RFC3339 格式的開始與結束時間

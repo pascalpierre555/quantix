@@ -1113,3 +1113,32 @@ void Paint_DrawBitMap_Paste_Scale(const unsigned char *image_buffer, UWORD Xstar
         }
     }
 }
+// Helper function to draw a character from a raw bitmap
+// This should ideally be in GUI_Paint.c and declared in GUI_Paint.h if used elsewhere
+// For now, placing it static here or directly inline if only used once.
+void Paint_DrawChineseChar_FromBitmap(UWORD Xpoint, UWORD Ypoint, const uint8_t *bitmap_data,
+                                      UWORD char_pixel_height,
+                                      UWORD char_pixel_width, // Made non-static
+                                      UWORD Color_Foreground, UWORD Color_Background) {
+    UWORD Page, Column;
+    // Calculate bytes per row based on the actual pixel width of the character bitmap
+    UWORD bytes_per_row = (char_pixel_width + 7) / 8;
+
+    for (Page = 0; Page < char_pixel_height; Page++) {
+        const uint8_t *row_ptr = bitmap_data + (Page * bytes_per_row);
+        for (Column = 0; Column < char_pixel_width; Column++) {
+            bool is_pixel_set = (row_ptr[Column / 8] & (0x80 >> (Column % 8)));
+
+            if (FONT_BACKGROUND == Color_Background) { // Speed up if background is transparent
+                if (is_pixel_set)
+                    Paint_SetPixel(Xpoint + Column, Ypoint + Page, Color_Foreground);
+            } else {
+                if (is_pixel_set) {
+                    Paint_SetPixel(Xpoint + Column, Ypoint + Page, Color_Foreground);
+                } else {
+                    Paint_SetPixel(Xpoint + Column, Ypoint + Page, Color_Background);
+                }
+            }
+        }
+    }
+}

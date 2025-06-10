@@ -8,7 +8,9 @@ void calendarStartup(void *pvParameters);
 extern char month[4]; // 用於存儲月份縮寫
 extern char year[5];  // 用於存儲年份
 extern char day[3];   // 用於存儲日期
+// Directory for calendar data in LittleFS
+#define CALENDAR_DIR "/littlefs/calendar"
 
-extern TaskHandle_t xcalendarStartupHandle;
+void calendar_startup(void);
 
 #endif // CALENDAR_H

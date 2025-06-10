@@ -4,8 +4,10 @@
 #include "EPD_config.h"
 #include "GUI_Paint.h"
 #include "ImageData.h"
+#include "cJSON.h" // For parsing event JSON
 #include "calendar.h"
 #include "esp_log.h"
+#include "font_task.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -29,6 +31,21 @@ static const char *TAG = "UI_TASK";
 
 static char setting_qrcode[256];
 
+// UI Layout Constants for Calendar View
+#define CALENDAR_DAY_X 5
+#define CALENDAR_DAY_Y 5
+#define CALENDAR_MONTH_X 5
+#define CALENDAR_MONTH_Y (CALENDAR_DAY_Y + 24 + 2) // Font24 height + spacing
+
+#define CALENDAR_EVENT_LIST_X 5
+#define CALENDAR_EVENT_LIST_Y (CALENDAR_MONTH_Y + 16 + 5) // Font16 height + spacing
+#define CALENDAR_EVENT_LIST_WIDTH (EPD_2IN9_V2_WIDTH - (CALENDAR_EVENT_LIST_X * 2))
+#define CALENDAR_EVENT_LIST_HEIGHT                                                                 \
+    (EPD_2IN9_V2_HEIGHT - CALENDAR_EVENT_LIST_Y - 5) // 5px bottom padding
+#define CALENDAR_EVENT_LINE_SPACING 2
+
+static sFONT *calendar_event_font = &Font12; // Font for event summaries
+
 void setting_qrcode_setting(char *qrcode) {
     if (qrcode != NULL && strlen(qrcode) < sizeof(setting_qrcode)) {
         memcpy(setting_qrcode, qrcode, sizeof(setting_qrcode) - 1);
@@ -36,6 +53,33 @@ void setting_qrcode_setting(char *qrcode) {
     } else {
         ESP_LOGE(TAG, "Invalid QR code string");
     }
+}
+
+// Helper function to format "YYYY-MM-DD" from event.msg to displayable day and month
+static void format_date_for_display(const char *yyyymmdd_str, char *out_day_str,
+                                    size_t day_str_size, char *out_month_abbr,
+                                    size_t month_abbr_size) {
+    if (!yyyymmdd_str || strlen(yyyymmdd_str) != 10 || strcmp(yyyymmdd_str, "NoDate") == 0) {
+        strncpy(out_day_str, "??", day_str_size - 1);
+        out_day_str[day_str_size - 1] = '\0';
+        strncpy(out_month_abbr, "???", month_abbr_size - 1);
+        out_month_abbr[month_abbr_size - 1] = '\0';
+        return;
+    }
+
+    strncpy(out_day_str, yyyymmdd_str + 8, 2); // Extract DD
+    out_day_str[2] = '\0';
+
+    char month_num_str[3];
+    strncpy(month_num_str, yyyymmdd_str + 5, 2); // Extract MM
+    month_num_str[2] = '\0';
+    int month_num = atoi(month_num_str);
+
+    const char *month_abbrs[] = {"",    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    strncpy(out_month_abbr, (month_num >= 1 && month_num <= 12) ? month_abbrs[month_num] : "???",
+            month_abbr_size - 1);
+    out_month_abbr[month_abbr_size - 1] = '\0';
 }
 
 void viewDisplay(void *PvParameters) {
@@ -126,15 +170,163 @@ void viewDisplay(void *PvParameters) {
                 }
                 break;
             case SCREEN_EVENT_CALENDAR:
-                if ((view_current != SCREEN_EVENT_CALENDAR) &&
+                // Re-render if it's a new view or if the date in msg has changed
+                if ((view_current != SCREEN_EVENT_CALENDAR || strcmp(displayStr, event.msg) != 0) &&
                     (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE)) {
-                    displayStr[0] = '\0'; // 清空顯示字串
+
+                    strncpy(displayStr, event.msg, sizeof(displayStr) - 1); // Cache the date string
+                    displayStr[sizeof(displayStr) - 1] = '\0';
+
+                    char disp_day[3];
+                    char disp_month[4];
+                    format_date_for_display(displayStr, disp_day, sizeof(disp_day), disp_month,
+                                            sizeof(disp_month));
+
                     EPD_2IN9_V2_Init_Fast();
-                    EPD_2IN9_V2_Clear();
                     Paint_SelectImage(BlackImage);
                     Paint_Clear(WHITE);
-                    Paint_DrawString_EN(0, 0, day, &Font24, BLACK, WHITE);
-                    Paint_DrawString_EN(0, 24, month, &Font16, BLACK, WHITE);
+
+                    // 1. Display Date
+                    Paint_DrawString_EN(CALENDAR_DAY_X, CALENDAR_DAY_Y, disp_day, &Font24, BLACK,
+                                        WHITE);
+                    Paint_DrawString_EN(CALENDAR_MONTH_X, CALENDAR_MONTH_Y, disp_month, &Font16,
+                                        BLACK, WHITE);
+
+                    // 2. Display Events from LittleFS
+                    if (strcmp(displayStr, "NoDate") != 0 && strlen(displayStr) == 10) {
+                        char file_path[64];
+                        // Initialize file_path to an empty string
+                        file_path[0] = '\0';
+                        size_t remaining_space = sizeof(file_path) - 1; // -1 for null terminator
+
+                        // 1. Copy CALENDAR_DIR
+                        strncpy(file_path, CALENDAR_DIR, remaining_space);
+                        file_path[remaining_space] = '\0'; // Ensure null termination
+                        size_t current_len = strlen(file_path);
+                        remaining_space = sizeof(file_path) - 1 - current_len;
+
+                        // 2. Append "/"
+                        if (remaining_space > 0) {
+                            strncat(file_path, "/", remaining_space);
+                            current_len = strlen(file_path);
+                            remaining_space = sizeof(file_path) - 1 - current_len;
+                        }
+
+                        // 3. Append displayStr (YYYY-MM-DD, which is 10 chars)
+                        // We know displayStr is 10 chars in this valid path
+                        if (remaining_space >= strlen(displayStr)) {
+                            strncat(file_path, displayStr,
+                                    strlen(displayStr)); // Append the known length
+                            current_len = strlen(file_path);
+                            remaining_space = sizeof(file_path) - 1 - current_len;
+                        }
+
+                        // 4. Append ".json"
+                        if (remaining_space >= strlen(".json")) {
+                            strncat(file_path, ".json", remaining_space);
+                        }
+                        // The string is now "<CALENDAR_DIR>/<displayStr>.json"
+
+                        ESP_LOGI(TAG, "Reading calendar events from: %s", file_path);
+
+                        FILE *f = fopen(file_path, "rb");
+                        if (f) {
+                            fseek(f, 0, SEEK_END);
+                            long fsize = ftell(f);
+                            fseek(f, 0, SEEK_SET);
+
+                            if (fsize > 0 && fsize < 8192) { // Max file size sanity check
+                                char *json_string = malloc(fsize + 1);
+                                if (json_string) {
+                                    size_t read_len = fread(json_string, 1, fsize, f);
+                                    if (read_len == fsize) {
+                                        json_string[fsize] = '\0';
+                                        cJSON *root = cJSON_Parse(json_string);
+                                        if (root && cJSON_IsArray(root)) {
+                                            UWORD current_y = CALENDAR_EVENT_LIST_Y;
+                                            UWORD line_height = calendar_event_font->Height +
+                                                                CALENDAR_EVENT_LINE_SPACING;
+                                            int events_displayed_count = 0;
+                                            cJSON *event_item_json;
+
+                                            cJSON_ArrayForEach(event_item_json, root) {
+                                                if (current_y + calendar_event_font->Height >
+                                                    CALENDAR_EVENT_LIST_Y +
+                                                        CALENDAR_EVENT_LIST_HEIGHT) {
+                                                    ESP_LOGI(TAG, "Event list area full.");
+                                                    break; // No more space
+                                                }
+                                                cJSON *summary = cJSON_GetObjectItemCaseSensitive(
+                                                    event_item_json, "summary");
+                                                if (cJSON_IsString(summary) &&
+                                                    (summary->valuestring != NULL)) {
+                                                    Paint_DrawString_Gen(
+                                                        CALENDAR_EVENT_LIST_X, current_y,
+                                                        CALENDAR_EVENT_LIST_WIDTH,
+                                                        calendar_event_font->Height,
+                                                        summary->valuestring, calendar_event_font,
+                                                        BLACK, WHITE);
+                                                    current_y += line_height;
+                                                    events_displayed_count++;
+                                                }
+                                            }
+                                            if (events_displayed_count == 0 &&
+                                                cJSON_GetArraySize(root) > 0) {
+                                                Paint_DrawString_Gen(
+                                                    CALENDAR_EVENT_LIST_X, CALENDAR_EVENT_LIST_Y,
+                                                    CALENDAR_EVENT_LIST_WIDTH,
+                                                    calendar_event_font->Height,
+                                                    "Events found, error displaying.",
+                                                    calendar_event_font, BLACK, WHITE);
+                                            } else if (cJSON_GetArraySize(root) == 0) {
+                                                Paint_DrawString_Gen(
+                                                    CALENDAR_EVENT_LIST_X, CALENDAR_EVENT_LIST_Y,
+                                                    CALENDAR_EVENT_LIST_WIDTH,
+                                                    calendar_event_font->Height,
+                                                    "No events scheduled.", calendar_event_font,
+                                                    BLACK, WHITE);
+                                            }
+                                        } else {
+                                            ESP_LOGE(TAG,
+                                                     "Failed to parse JSON or not an array: %s",
+                                                     file_path);
+                                            Paint_DrawString_Gen(
+                                                CALENDAR_EVENT_LIST_X, CALENDAR_EVENT_LIST_Y,
+                                                CALENDAR_EVENT_LIST_WIDTH,
+                                                calendar_event_font->Height, "Event data error.",
+                                                calendar_event_font, BLACK, WHITE);
+                                        }
+                                        if (root)
+                                            cJSON_Delete(root);
+                                    } else {
+                                        ESP_LOGE(TAG, "Failed to read full file: %s", file_path);
+                                    }
+                                    free(json_string);
+                                } else {
+                                    ESP_LOGE(TAG, "Malloc failed for event JSON string (size %ld)",
+                                             fsize);
+                                }
+                            } else if (fsize == 0) {
+                                Paint_DrawString_Gen(
+                                    CALENDAR_EVENT_LIST_X, CALENDAR_EVENT_LIST_Y,
+                                    CALENDAR_EVENT_LIST_WIDTH, calendar_event_font->Height,
+                                    "No events scheduled.", calendar_event_font, BLACK, WHITE);
+                            }
+                            fclose(f);
+                        } else {
+                            ESP_LOGI(TAG, "No event file found: %s", file_path);
+                            Paint_DrawString_Gen(
+                                CALENDAR_EVENT_LIST_X, CALENDAR_EVENT_LIST_Y,
+                                CALENDAR_EVENT_LIST_WIDTH, calendar_event_font->Height,
+                                "No events for this day.", calendar_event_font, BLACK, WHITE);
+                        }
+                    } else {
+                        Paint_DrawString_Gen(CALENDAR_EVENT_LIST_X, CALENDAR_EVENT_LIST_Y,
+                                             CALENDAR_EVENT_LIST_WIDTH, calendar_event_font->Height,
+                                             "Date not available.", calendar_event_font, BLACK,
+                                             WHITE);
+                    }
+
                     EPD_2IN9_V2_Display(BlackImage);
                     view_current = event.event_id;
                     EPD_2IN9_V2_Sleep();

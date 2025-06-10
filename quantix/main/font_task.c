@@ -326,8 +326,92 @@ static void font_download_callback(net_event_t *event, esp_err_t result) {
     }
 }
 
-void Paint_DrawString_CN_RAM(UWORD x_start, UWORD y_start, UWORD area_width, UWORD area_height,
-                             const char *text, sFONT *font, UWORD fg, UWORD bg) {}
+void Paint_DrawString_Gen(UWORD x_start, UWORD y_start, UWORD area_width, UWORD area_height,
+                          const char *text, sFONT *font, UWORD fg, UWORD bg) {
+    UWORD current_x = x_start;
+    UWORD current_y = y_start;
+    const char *p_text = text;
+
+    if (!text || !font) {
+        ESP_LOGE(TAG_FONT, "Paint_DrawString_Gen: Invalid arguments.");
+        return;
+    }
+
+    UWORD eng_char_width = font->Width;
+    UWORD char_height = font->Height;
+    UWORD cn_char_layout_width = font->Width * 2; // Layout width for Chinese char
+
+    // Pre-calculate expected FONT_SIZE based on font dimensions for Chinese characters
+    // This is crucial for correct interpretation of FONT_SIZE data
+    UWORD cn_char_pixel_width_from_font = font->Width * 2;
+    UWORD cn_bytes_per_row_expected = (cn_char_pixel_width_from_font + 7) / 8;
+    UWORD expected_font_size_for_cn = font->Height * cn_bytes_per_row_expected;
+
+    if (FONT_SIZE != expected_font_size_for_cn) {
+        ESP_LOGW(TAG_FONT,
+                 "FONT_SIZE (%d) mismatch with expected for Chinese char (%dx%d based on sFONT: "
+                 "%d). Rendering may be incorrect.",
+                 FONT_SIZE, char_height, cn_char_pixel_width_from_font, expected_font_size_for_cn);
+        // Depending on desired behavior, you might want to return or try to adapt.
+        // For now, we'll proceed, but it might lead to visual glitches.
+    }
+
+    while (*p_text != '\0') {
+        if (current_y + char_height > y_start + area_height) {
+            break; // No more vertical space
+        }
+
+        // Check if it's an ASCII character (single byte)
+        if ((*p_text & 0x80) == 0 && *p_text >= ' ' && *p_text <= '~') {
+            if (current_x + eng_char_width > x_start + area_width) {
+                current_x = x_start;
+                current_y += char_height;
+                if (current_y + char_height > y_start + area_height)
+                    break;
+            }
+            Paint_DrawChar(current_x, current_y, *p_text, font, fg, bg);
+            current_x += eng_char_width;
+            p_text++;
+        } else { // UTF-8 multi-byte character (assume Chinese)
+            if (current_x + cn_char_layout_width > x_start + area_width) {
+                current_x = x_start;
+                current_y += char_height;
+                if (current_y + char_height > y_start + area_height)
+                    break;
+            }
+
+            char utf8_char_bytes[5] = {0};
+            char hex_key_output[HEX_KEY_LEN];
+            int utf8_len = 1;
+            if ((*p_text & 0xF0) == 0xF0)
+                utf8_len = 4;
+            else if ((*p_text & 0xE0) == 0xE0)
+                utf8_len = 3;
+            else if ((*p_text & 0xC0) == 0xC0)
+                utf8_len = 2;
+
+            memcpy(utf8_char_bytes, p_text, utf8_len);
+            utf8_to_hex(utf8_char_bytes, hex_key_output, sizeof(hex_key_output));
+
+            int table_idx = font_hash_find(hex_key_output);
+            if (table_idx >= 0 && table_idx < font_table_count) {
+                // Draw Chinese char using its specific bitmap from font_table
+                // The actual pixel width used for drawing comes from cn_char_pixel_width_from_font
+                Paint_DrawBitMap_Paste(font_table[table_idx].data, current_x, current_y,
+                                       cn_char_layout_width, char_height, 1);
+            } else {
+                // Font not found, draw a placeholder
+                Paint_DrawRectangle(
+                    current_x + 1, current_y + 1, current_x + cn_char_layout_width - 2,
+                    current_y + char_height - 2, fg, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
+                ESP_LOGW(TAG_FONT, "Chinese font %s (hex: %s) not found in RAM cache.",
+                         utf8_char_bytes, hex_key_output);
+            }
+            current_x += cn_char_layout_width;
+            p_text += utf8_len;
+        }
+    }
+}
 
 // Queues a request to download missing font characters.
 esp_err_t download_missing_characters(const char *missing_chars) {

@@ -18,11 +18,12 @@
 #define CALENDAR_URL "https://peng-pc.tail941dce.ts.net/api/calendar"
 
 #define CALENDAR_DIR "/littlefs/calendar" // Directory for calendar data in LittleFS
-char year[5] = {0};                       // 用於存儲年份
-char month[4] = {0};                      // 用於存儲月份縮寫
-char day[3] = {0};                        // 用於存儲日期
+// Static buffer for API responses related to calendar events
+static char calendar_api_response_buffer[512];
 
-TaskHandle_t xcalendarStartupHandle = NULL;
+char year[5] = {0};  // 用於存儲年份
+char month[4] = {0}; // 用於存儲月份縮寫
+char day[3] = {0};   // 用於存儲日期
 
 void get_today_date_string(char *buf, size_t buf_size) {
     time_t now;
@@ -209,8 +210,36 @@ esp_err_t check_calendar_settings(void) {
     return ESP_OK;
 }
 
-void calendarStartup_callback(net_event_t *event, esp_err_t result) {
+void collect_event_data_callback(net_event_t *event, esp_err_t result) {
     if (result == ESP_OK && event->json_root) {
+        event_t ev_cal;
+        ev_cal.event_id = SCREEN_EVENT_CALENDAR;
+        if (event->user_data) {
+            strncpy(ev_cal.msg, (char *)event->user_data, sizeof(ev_cal.msg) - 1);
+            ev_cal.msg[sizeof(ev_cal.msg) - 1] = '\0';
+            ESP_LOGI(TAG, "Sending SCREEN_EVENT_CALENDAR with date: %s", ev_cal.msg);
+        } else {
+            ESP_LOGW(TAG, "user_data (date) is NULL for calendar UI event. Sending with 'NoDate'.");
+            snprintf(ev_cal.msg, sizeof(ev_cal.msg), "NoDate");
+        }
+        // Note: We send the UI event before freeing user_data,
+        // as the queue send copies the event_t structure.
+
+        // Free dynamically allocated post_data if it exists
+        // This callback knows that for this specific event type, post_data was malloc'd.
+        if (event->post_data) {
+            free((void *)event->post_data);
+            // Setting event->post_data to NULL is not strictly necessary here as the event
+            // struct is a copy from the queue and will be discarded after this callback,
+            // but it's good practice if the struct had a longer lifecycle.
+            // event->post_data = NULL;
+        }
+        // Free dynamically allocated user_data (the date string)
+        if (event->user_data) {
+            free(event->user_data);
+            // event->user_data = NULL; // Not strictly necessary for same reasons as post_data
+        }
+
         ESP_LOGI(TAG, "Received calendar data, processing events...");
         cJSON *events_array = cJSON_GetObjectItemCaseSensitive(event->json_root, "events");
 
@@ -374,6 +403,7 @@ void calendarStartup_callback(net_event_t *event, esp_err_t result) {
                             // Convert struct tm to time_t for easier date arithmetic
                             time_t start_t = mktime(&start_tm);
                             time_t end_t = mktime(&end_tm);
+                            printf("start_t: %lld, end_t: %lld\n", start_t, end_t);
 
                             if (start_t != (time_t)-1 && end_t != (time_t)-1) {
                                 for (time_t current_t = start_t; current_t <= end_t;
@@ -404,12 +434,22 @@ void calendarStartup_callback(net_event_t *event, esp_err_t result) {
             // After processing all events, download missing characters if any
             download_missing_characters(missing_chars_total);
             ESP_LOGI(TAG, "Finished processing and saving calendar events.");
+            xQueueSend(gui_queue, &ev_cal, portMAX_DELAY); // Send the prepared UI event
         } else {
             ESP_LOGW(TAG, "Events array is not valid or empty.");
         }
         cJSON_Delete(event->json_root); // Free the parsed JSON tree
         event->json_root = NULL;        // Mark as processed
     } else {
+        // Free dynamically allocated post_data even on failure
+        if (event->post_data) {
+            free((void *)event->post_data);
+            event->post_data = NULL;
+        }
+        if (event->user_data) {
+            free(event->user_data);
+            event->user_data = NULL;
+        }
         ESP_LOGE(TAG, "Failed to receive calendar data or JSON parse error. HTTP result: %s",
                  esp_err_to_name(result));
         if (event->response_buffer && strlen(event->response_buffer) > 0) {
@@ -422,43 +462,60 @@ void calendarStartup_callback(net_event_t *event, esp_err_t result) {
     }
 }
 
-void calendarStartup(void *pvParameters) {
-    for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // 等待通知喚醒
-        xEventGroupWaitBits(net_event_group, NET_TIME_AVAILABLE_BIT, false, true, portMAX_DELAY);
-        if (check_calendar_settings() != ESP_OK) {
-            event_t ev = {
-                .event_id = SCREEN_EVENT_CENTER,
-                .msg = "No calendar settings found. Generating QR code for calendar setup...",
-            };
-            xQueueSend(gui_queue, &ev, portMAX_DELAY);
-            userSettings();
-            ESP_LOGE(TAG, "Failed to read calendar settings");
-        } else {
-            ESP_LOGI(TAG, "Calendar settings found, proceeding with calendar setup");
-            char post_data_buffer[27]; // 大小自己抓，不要爆掉
-            char date[11];
-            time_t now;
-            struct tm timeinfo;
-            time(&now);
-            localtime_r(&now, &timeinfo);
-            strftime(date, sizeof(date), "%Y-%m-%d", &timeinfo);
-            snprintf(post_data_buffer, sizeof(post_data_buffer), "{\"date\":\"%s\"}", date);
-            char responseBuffer[512] = {0}; // 確保有足夠的空間
-            net_event_t event = {
-                .url = CALENDAR_URL,
-                .method = HTTP_METHOD_POST,
-                .post_data = post_data_buffer,
-                .use_jwt = true,
-                .save_to_buffer = true,
-                .response_buffer = responseBuffer,
-                .response_buffer_size = sizeof(responseBuffer),
-                .on_finish = calendarStartup_callback,
-                .user_data = NULL,
-                .json_root = (void *)1,
-            };
-            xQueueSend(net_queue, &event, portMAX_DELAY);
-        }
+void collect_event_data(time_t time) {
+    char date[11];
+    struct tm timeinfo;
+    localtime_r(&time, &timeinfo);
+    strftime(date, sizeof(date), "%Y-%m-%d", &timeinfo);
+
+    // Dynamically allocate buffer for post_data
+    char *dynamic_post_data = malloc(27); // Approximate size for {"date":"YYYY-MM-DD"}
+    if (!dynamic_post_data) {
+        ESP_LOGE(TAG, "Failed to allocate memory for post_data");
+        return;
+    }
+    snprintf(dynamic_post_data, 27, "{\"date\":\"%s\"}", date);
+
+    // Duplicate the date string for the UI event message
+    char *date_for_ui_event = strdup(date); // strdup uses malloc
+    if (!date_for_ui_event) {
+        ESP_LOGE(TAG, "Failed to allocate memory for date_for_ui_event");
+        free(dynamic_post_data); // Clean up previously allocated memory
+        return;
+    }
+
+    // Clear the static response buffer before use
+    calendar_api_response_buffer[0] = '\0';
+
+    net_event_t event = {
+        .url = CALENDAR_URL,
+        .method = HTTP_METHOD_POST,
+        .post_data = dynamic_post_data, // Use dynamically allocated buffer
+        .use_jwt = true,
+        .save_to_buffer = true,
+        .response_buffer = calendar_api_response_buffer, // Use static calendar response buffer
+        .response_buffer_size = sizeof(calendar_api_response_buffer),
+        .on_finish = collect_event_data_callback,
+        .user_data = date_for_ui_event, // Pass the date string for the UI
+        .json_root = (void *)1,
+    };
+    xQueueSend(net_queue, &event, portMAX_DELAY);
+}
+
+void calendar_startup(void) {
+    if (check_calendar_settings() != ESP_OK) {
+        event_t ev = {
+            .event_id = SCREEN_EVENT_CENTER,
+            .msg = "No calendar settings found. Generating QR code for calendar setup...",
+        };
+        xQueueSend(gui_queue, &ev, portMAX_DELAY);
+        userSettings();
+        ESP_LOGE(TAG, "Failed to read calendar settings");
+    } else {
+        ESP_LOGI(TAG, "Calendar settings found, proceeding with calendar setup");
+        time_t now;
+        time(&now);
+        collect_event_data(now);
     }
 }
 

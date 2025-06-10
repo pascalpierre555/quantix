@@ -87,7 +87,6 @@ void app_main() {
     xTaskCreate(netStartup, "netStartup", 4096, NULL, 5, NULL);
     xTaskCreate(ntpStartup, "ntpStartup", 4096, NULL, 5, NULL);
     xTaskCreate(ec11Startup, "ec11Startup", 4096, NULL, 5, NULL);
-    xTaskCreate(calendarStartup, "calendarStartup", 4096, NULL, 5, &xcalendarStartupHandle);
     font_table_init();
     ESP_LOGI("APP_MAIN", "All tasks created");
 }

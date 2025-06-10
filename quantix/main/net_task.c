@@ -362,7 +362,7 @@ static void check_auth_result_callback(net_event_t *event, esp_err_t err) {
         } else {
             http_response_save_to_nvs(event->json_root, "calendar", "access_token");
             http_response_save_to_nvs(event->json_root, "calendar", "refresh_token");
-            xTaskNotifyGive(xcalendarStartupHandle);
+            calendar_startup();
         }
         cJSON_Delete(event->json_root); // 用完要釋放
     } else {
@@ -405,7 +405,7 @@ static void server_check_callback(net_event_t *event, esp_err_t err) {
                 .msg = "Server connected successfully:)",
             };
             xQueueSend(gui_queue, &ev, portMAX_DELAY);
-            xTaskNotifyGive(xcalendarStartupHandle);
+            calendar_startup();
         } else {
             ESP_LOGE(TAG, "No 'token' in JSON response!");
         }
@@ -448,7 +448,6 @@ static void user_settings_callback(net_event_t *event, esp_err_t err) {
             ESP_LOGE(TAG, "No qrcode in JSON response!");
         }
         cJSON_Delete(event->json_root);
-        xEventGroupSetBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
     } else {
         ESP_LOGE(TAG, "Failed to parse JSON or HTTP error: %s",
                  event->response_buffer ? event->response_buffer : "");
