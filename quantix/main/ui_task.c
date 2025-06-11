@@ -32,24 +32,23 @@ static const char *TAG = "UI_TASK";
 static char setting_qrcode[256];
 
 // UI Layout Constants for Calendar View
-#define CALENDAR_DAY_X 5
-#define CALENDAR_DAY_Y 5
-#define CALENDAR_MONTH_X 5
-#define CALENDAR_MONTH_Y (CALENDAR_DAY_Y + 24 + 2) // Font24 height + spacing
+#define CALENDAR_DAY_X 10
+#define CALENDAR_DAY_Y 10
+#define CALENDAR_MONTH_X 10
+#define CALENDAR_MONTH_Y (CALENDAR_DAY_Y + 36) // Font24 height + spacing
 
-#define CALENDAR_EVENT_LIST_X 5
-#define CALENDAR_EVENT_LIST_Y (CALENDAR_MONTH_Y + 16 + 5) // Font16 height + spacing
-#define CALENDAR_EVENT_LIST_WIDTH (EPD_2IN9_V2_WIDTH - (CALENDAR_EVENT_LIST_X * 2))
-#define CALENDAR_EVENT_LIST_HEIGHT                                                                 \
-    (EPD_2IN9_V2_HEIGHT - CALENDAR_EVENT_LIST_Y - 5) // 5px bottom padding
-#define CALENDAR_EVENT_LINE_SPACING 2
+#define CALENDAR_EVENT_LIST_X (CALENDAR_DAY_X + 36 + 10)
+#define CALENDAR_EVENT_LIST_Y (CALENDAR_DAY_Y - 5)
+#define CALENDAR_EVENT_LIST_WIDTH (EPD_2IN9_V2_HEIGHT - CALENDAR_EVENT_LIST_X - 5)
+#define CALENDAR_EVENT_LIST_HEIGHT (EPD_2IN9_V2_WIDTH - 5) // 5px bottom padding
+#define CALENDAR_EVENT_LINE_SPACING 5
 
 static sFONT *calendar_event_font = &Font16; // Font for event summaries
 
 void setting_qrcode_setting(char *qrcode) {
     if (qrcode != NULL && strlen(qrcode) < sizeof(setting_qrcode)) {
         memcpy(setting_qrcode, qrcode, sizeof(setting_qrcode) - 1);
-        setting_qrcode[sizeof(setting_qrcode) - 1] = '\0'; // 確保字串結尾
+        setting_qrcode[sizeof(setting_qrcode) - 1] = '\0'; // 確保string結尾
     } else {
         ESP_LOGE(TAG, "Invalid QR code string");
     }
@@ -157,7 +156,7 @@ void viewDisplay(void *PvParameters) {
                 break;
             case SCREEN_EVENT_CLEAR:
                 if (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE) {
-                    displayStr[0] = '\0'; // 清空顯示字串
+                    displayStr[0] = '\0'; // 清空顯示string
                     EPD_2IN9_V2_Init();
                     EPD_2IN9_V2_Clear();
                     Paint_SelectImage(BlackImage);
@@ -187,10 +186,11 @@ void viewDisplay(void *PvParameters) {
                     Paint_Clear(WHITE);
 
                     // 1. Display Date
-                    Paint_DrawString_EN(CALENDAR_DAY_X, CALENDAR_DAY_Y, disp_day, &Font24, BLACK,
-                                        WHITE);
+                    Paint_DrawString_EN(CALENDAR_DAY_X, CALENDAR_DAY_Y, disp_day, &Font36, WHITE,
+                                        BLACK);
                     Paint_DrawString_EN(CALENDAR_MONTH_X, CALENDAR_MONTH_Y, disp_month, &Font16,
                                         BLACK, WHITE);
+                    Paint_DrawRectangle(5, 5, 51, 69, BLACK, 1, DRAW_FILL_EMPTY);
 
                     // 2. Display Events from LittleFS
                     if (strcmp(displayStr, "NoDate") != 0 && strlen(displayStr) == 10) {
@@ -256,17 +256,33 @@ void viewDisplay(void *PvParameters) {
                                                     ESP_LOGI(TAG, "Event list area full.");
                                                     break; // No more space
                                                 }
+                                                cJSON *start = cJSON_GetObjectItemCaseSensitive(
+                                                    event_item_json, "start");
+                                                if (cJSON_IsString(start) &&
+                                                    (start->valuestring != NULL) &&
+                                                    strncmp(event.msg, start->valuestring, 10) ==
+                                                        0) {
+
+                                                    char time[6] = {0};
+                                                    strncpy(time, start->valuestring + 11, 5);
+                                                    Paint_DrawString_EN(
+                                                        CALENDAR_EVENT_LIST_X, current_y, time,
+                                                        calendar_event_font, WHITE, BLACK);
+                                                }
                                                 cJSON *summary = cJSON_GetObjectItemCaseSensitive(
                                                     event_item_json, "summary");
                                                 if (cJSON_IsString(summary) &&
                                                     (summary->valuestring != NULL)) {
-                                                    Paint_DrawString_Gen(
-                                                        CALENDAR_EVENT_LIST_X, current_y,
-                                                        CALENDAR_EVENT_LIST_WIDTH,
-                                                        calendar_event_font->Height,
-                                                        summary->valuestring, calendar_event_font,
-                                                        BLACK, WHITE);
-                                                    current_y += line_height;
+                                                    current_y +=
+                                                        (line_height *
+                                                         Paint_DrawString_Gen(
+                                                             CALENDAR_EVENT_LIST_X + 48, current_y,
+                                                             CALENDAR_EVENT_LIST_WIDTH - 48,
+                                                             CALENDAR_EVENT_LIST_Y +
+                                                                 CALENDAR_EVENT_LIST_HEIGHT -
+                                                                 current_y,
+                                                             summary->valuestring,
+                                                             calendar_event_font, BLACK, WHITE));
                                                     events_displayed_count++;
                                                 }
                                             }

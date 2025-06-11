@@ -351,7 +351,7 @@ static void check_auth_result_callback(net_event_t *event, esp_err_t err) {
             char *status = cJSON_GetStringValue(item);
             if (status) {
                 ESP_LOGI(TAG, "Status: %s", status);
-                ev.msg[26] = '\0'; // 確保字串結尾
+                ev.msg[26] = '\0'; // 確保string結尾
                 strncat(ev.msg, status, MAX_MSG_LEN - strlen(ev.msg) - 1);
                 xQueueSend(gui_queue, &ev, portMAX_DELAY);
                 xSemaphoreTake(xScreen, portMAX_DELAY);

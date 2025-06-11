@@ -1,10 +1,10 @@
 from PIL import Image, ImageDraw, ImageFont
 
 # Configuration
-FONT_PATH = "/home/peng/Downloads/tamzen-font/ttf/Tamzen8x16r.ttf"
-FONT_SIZE = 16
-CANVAS_WIDTH = 11
-CANVAS_HEIGHT = 16
+FONT_PATH = "/home/peng/Downloads/tamzen-font/ttf/Tamzen6x12b.ttf"
+FONT_SIZE = 36
+CANVAS_WIDTH = 18
+CANVAS_HEIGHT = 36
 START_CHAR = 32
 END_CHAR = 126
 
@@ -43,23 +43,26 @@ for c in CHARS:
     for y in range(CANVAS_HEIGHT):
         byte1 = 0
         byte2 = 0
+        byte3 = 0
         for x in range(CANVAS_WIDTH):
             pixel = image.getpixel((x, y))
             if pixel > 128:
                 if x < 8:
                     byte1 |= 1 << (7 - x)
-                else:
+                elif x < 16:
                     byte2 |= 1 << (15 - x)
-        output_lines.append(f"  0x{byte1:02X}, 0x{byte2:02X},")
-        offset += 2
+                else:
+                    byte3 |= 1 << (23 - x)
+        output_lines.append(f"  0x{byte1:02X}, 0x{byte2:02X}, 0x{byte3:02X},")
+        offset += 3
 
 # Wrap in C array
-header = "#include \"fonts.h\" \n const uint8_t Font16_Table[] = \n{\n"
-footer = "};\n sFONT Font16 = {Font16_Table, 11,16,};"
+header = "#include \"fonts.h\" \n const uint8_t Font36_Table[] = \n{\n"
+footer = "};\n sFONT Font36 = {Font36_Table, 18,36,};"
 c_output = header + "\n".join(output_lines) + "\n" + footer
 
 # Save to file
-output_path = "/home/peng/quantix/quantix/components/EPD_2in9/Fonts/font16.c"
+output_path = "/home/peng/quantix/quantix/components/EPD_2in9/Fonts/font36.c"
 with open(output_path, "w") as f:
     f.write(c_output)
 

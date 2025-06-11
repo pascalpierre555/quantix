@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string, g
+from flask import Flask, request, jsonify, render_template_string, g, Response
 import jwt                       # 🔹 pyjwt 套件，用來產生/解析 token
 import datetime                  # 🔹 處理過期時間
 from functools import wraps     # 🔹 保留函式原名的裝飾器工具
@@ -509,7 +509,14 @@ def get_font():
     result = generate_font_char_data_dict(chars, 16)
     if result is None:
         return jsonify({"error": "Failed to generate font data"}), 500
-    return jsonify(result)
+
+    # 將 Python 字典轉換為緊湊的 JSON 字符串 (無多餘空格和換行)
+    compact_json_string = json.dumps(result, separators=(',', ':'))
+    # 計算 JSON 字符串的字節長度 (通常為 UTF-8 編碼)
+    response_byte_length = len(compact_json_string.encode('utf-8'))
+    print(f"回傳的 JSON 字節長度: {response_byte_length}")
+
+    return Response(compact_json_string, mimetype='application/json')
 
 
 if __name__ == '__main__':
