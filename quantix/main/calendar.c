@@ -30,6 +30,26 @@
 static char calendar_api_response_buffer[512];
 TaskHandle_t xCalendarStartupHandle;
 TaskHandle_t xPlusOneDayHandle;
+TaskHandle_t xPrefetchCalendarTaskHandle; // 新增預取任務的 Handle
+
+// 預取快取相關定義
+#define TAG_PREFETCH "PREFETCH_CAL"
+#define MAX_PREFETCH_CACHE_SIZE 11         // 足夠 +/-5 天
+#define PREFETCH_COOLDOWN_SECONDS (5 * 60) // 5 分鐘
+
+typedef struct {
+    time_t date_t;        // 日期 (標準化到午夜)
+    time_t last_fetch_ts; // 上次擷取此日期的時間戳
+} PrefetchCacheEntry;
+
+static PrefetchCacheEntry prefetch_cache[MAX_PREFETCH_CACHE_SIZE];
+static int prefetch_cache_fill_count = 0;       // 目前快取中實際條目數量
+static int prefetch_cache_next_replace_idx = 0; // 用於循環取代的索引
+
+static SemaphoreHandle_t xPrefetchCacheMutex = NULL;
+
+// 從 font_task.c 引用，用於檢查字體表使用情況
+extern int font_table_count;
 
 // 解析日期string (YYYY-MM-DD 或 YYYY-MM-DDTHH:MM:SS...) 到 struct tm 結構體
 // 成功返回 true，失敗返回 false。
@@ -378,6 +398,177 @@ void collect_event_data(struct tm timeinfo) {
     };
     xQueueSend(net_queue, &event, portMAX_DELAY);
 }
+// Helper: 標準化 time_t 到當天午夜
+static time_t normalize_to_midnight(time_t ts) {
+    struct tm ti;
+    localtime_r(&ts, &ti);
+    ti.tm_hour = 0;
+    ti.tm_min = 0;
+    ti.tm_sec = 0;
+    return mktime(&ti);
+}
+
+// Helper: 檢查是否應該預取某個日期 (考慮快取和冷卻時間)
+static bool should_prefetch_date(time_t target_date_ts) {
+    if (xSemaphoreTake(xPrefetchCacheMutex, portMAX_DELAY) == pdFALSE) {
+        ESP_LOGE(TAG_PREFETCH, "Failed to take prefetch cache mutex");
+        return false; // 如果無法獲取互斥鎖，則不預取
+    }
+
+    time_t current_sys_time;
+    time(&current_sys_time);
+    time_t normalized_target_date = normalize_to_midnight(target_date_ts);
+
+    for (int i = 0; i < prefetch_cache_fill_count; ++i) {
+        if (prefetch_cache[i].date_t == normalized_target_date) {
+            if ((current_sys_time - prefetch_cache[i].last_fetch_ts) < PREFETCH_COOLDOWN_SECONDS) {
+                ESP_LOGI(TAG_PREFETCH, "Date %s already fetched within %d mins. Skipping.",
+                         asctime(localtime(&normalized_target_date)),
+                         PREFETCH_COOLDOWN_SECONDS / 60);
+                xSemaphoreGive(xPrefetchCacheMutex);
+                return false; // 最近擷取過
+            } else {
+                prefetch_cache[i].last_fetch_ts = current_sys_time;
+                ESP_LOGI(TAG_PREFETCH, "Date %s found in cache, older than %d mins. Refetching.",
+                         asctime(localtime(&normalized_target_date)),
+                         PREFETCH_COOLDOWN_SECONDS / 60);
+                xSemaphoreGive(xPrefetchCacheMutex);
+                return true; // 超過冷卻時間，重新擷取
+            }
+        }
+    }
+
+    // 不在快取中，新增它
+    if (prefetch_cache_fill_count < MAX_PREFETCH_CACHE_SIZE) {
+        prefetch_cache[prefetch_cache_fill_count].date_t = normalized_target_date;
+        prefetch_cache[prefetch_cache_fill_count].last_fetch_ts = current_sys_time;
+        prefetch_cache_fill_count++;
+        ESP_LOGI(TAG_PREFETCH, "Date %s not in cache. Added. Fetching.",
+                 asctime(localtime(&normalized_target_date)));
+    } else {
+        // 快取已滿，使用循環取代策略
+        ESP_LOGW(TAG_PREFETCH, "Prefetch cache full. Replacing entry at index %d for date %s.",
+                 prefetch_cache_next_replace_idx, asctime(localtime(&normalized_target_date)));
+        prefetch_cache[prefetch_cache_next_replace_idx].date_t = normalized_target_date;
+        prefetch_cache[prefetch_cache_next_replace_idx].last_fetch_ts = current_sys_time;
+        prefetch_cache_next_replace_idx =
+            (prefetch_cache_next_replace_idx + 1) % MAX_PREFETCH_CACHE_SIZE;
+    }
+    xSemaphoreGive(xPrefetchCacheMutex);
+    return true;
+}
+
+// 預取日曆數據的任務
+void prefetch_calendar_task(void *pvParameters) {
+    // 在此任務開始時創建互斥鎖
+    xPrefetchCacheMutex = xSemaphoreCreateMutex();
+    memset(prefetch_cache, 0, sizeof(prefetch_cache)); // 初始化快取
+    if (xPrefetchCacheMutex == NULL) {                 // 確保互斥鎖已創建
+        xPrefetchCacheMutex = xSemaphoreCreateMutex();
+        if (xPrefetchCacheMutex == NULL) {
+            ESP_LOGE(TAG_PREFETCH, "Failed to create prefetch cache mutex in task!");
+            vTaskDelete(NULL);
+        }
+        memset(prefetch_cache, 0, sizeof(prefetch_cache));
+    }
+
+    time_t current_center_day_t;
+    uint32_t notification_value;
+
+    for (;;) {
+        // 檢查字體表快取使用情況
+        // MAX_FONTS 是在 font_task.h 中定義的
+        if (font_table_count > (MAX_FONTS * 3 / 4)) { // 超過 75%
+            ESP_LOGI(TAG_PREFETCH, "Font table cache is >75%% full (%d/%d). Clearing font table.",
+                     font_table_count, MAX_FONTS);
+            font_table_init(); // 清空字體表 (此函數也會重置 font_table_count)
+
+            // 清空字體表後，重置 prefetch_cache 中所有條目的 last_fetch_ts 以強制重新預取
+            if (xSemaphoreTake(xPrefetchCacheMutex, portMAX_DELAY) == pdTRUE) {
+                ESP_LOGI(TAG_PREFETCH, "Resetting prefetch cache timestamps to force re-fetch.");
+                for (int i = 0; i < prefetch_cache_fill_count; ++i) {
+                    prefetch_cache[i].last_fetch_ts = 0; // 設為0以確保下次檢查時會重新擷取
+                }
+                xSemaphoreGive(xPrefetchCacheMutex);
+            } else {
+                ESP_LOGE(TAG_PREFETCH,
+                         "Failed to take prefetch cache mutex for resetting timestamps.");
+            }
+        }
+
+        ESP_LOGI(TAG_PREFETCH, "Waiting for prefetch trigger notification");
+        // 等待來自 calendar_startup 的通知，其中包含中心日期的 time_t
+        if (xTaskNotifyWait(0, ULONG_MAX, &notification_value, portMAX_DELAY) == pdPASS) {
+            current_center_day_t = normalize_to_midnight((time_t)notification_value);
+            struct tm current_center_tm;
+            localtime_r(&current_center_day_t, &current_center_tm);
+            ESP_LOGI(TAG_PREFETCH, "Received prefetch trigger for date: %04d-%02d-%02d",
+                     current_center_tm.tm_year + 1900, current_center_tm.tm_mon + 1,
+                     current_center_tm.tm_mday);
+
+            // 等待網路和 Google Token 可用
+            xEventGroupWaitBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT, pdFALSE, pdTRUE,
+                                portMAX_DELAY);
+
+            for (int offset = 1; offset <= 5; ++offset) {
+                // 檢查是否有新的通知以中斷當前預取序列
+                if (xTaskNotifyWait(0, ULONG_MAX, &notification_value, 0) == pdPASS) {
+                    current_center_day_t = normalize_to_midnight((time_t)notification_value);
+                    localtime_r(&current_center_day_t, &current_center_tm);
+                    ESP_LOGI(TAG_PREFETCH,
+                             "Prefetch interrupted by new trigger for date: %04d-%02d-%02d. "
+                             "Restarting prefetch.",
+                             current_center_tm.tm_year + 1900, current_center_tm.tm_mon + 1,
+                             current_center_tm.tm_mday);
+                    offset = 0; // 會在下一次迭代變成 1，重新開始
+                    xEventGroupWaitBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT, pdFALSE,
+                                        pdTRUE, portMAX_DELAY); // 再次檢查
+                    continue;
+                }
+
+                // 預取 後一天 (current_center_day_t + offset)
+                time_t next_day_to_fetch_t = current_center_day_t + (offset * 86400);
+                if (should_prefetch_date(next_day_to_fetch_t)) {
+                    struct tm next_tm;
+                    localtime_r(&next_day_to_fetch_t, &next_tm);
+                    ESP_LOGI(TAG_PREFETCH, "Prefetching for next day (+%d): %04d-%02d-%02d", offset,
+                             next_tm.tm_year + 1900, next_tm.tm_mon + 1, next_tm.tm_mday);
+                    collect_event_data(next_tm); // 非同步呼叫
+                }
+
+                // 再次檢查中斷
+                if (xTaskNotifyWait(0, ULONG_MAX, &notification_value, 0) == pdPASS) {
+                    current_center_day_t = normalize_to_midnight((time_t)notification_value);
+                    localtime_r(&current_center_day_t, &current_center_tm);
+                    ESP_LOGI(TAG_PREFETCH,
+                             "Prefetch interrupted by new trigger for date: %04d-%02d-%02d. "
+                             "Restarting prefetch.",
+                             current_center_tm.tm_year + 1900, current_center_tm.tm_mon + 1,
+                             current_center_tm.tm_mday);
+                    offset = 0;
+                    xEventGroupWaitBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT, pdFALSE,
+                                        pdTRUE, portMAX_DELAY);
+                    continue;
+                }
+
+                // 預取 前一天 (current_center_day_t - offset)
+                time_t prev_day_to_fetch_t = current_center_day_t - (offset * 86400);
+                if (should_prefetch_date(prev_day_to_fetch_t)) {
+                    struct tm prev_tm;
+                    localtime_r(&prev_day_to_fetch_t, &prev_tm);
+                    ESP_LOGI(TAG_PREFETCH, "Prefetching for prev day (-%d): %04d-%02d-%02d", offset,
+                             prev_tm.tm_year + 1900, prev_tm.tm_mon + 1, prev_tm.tm_mday);
+                    collect_event_data(prev_tm); // 非同步呼叫
+                }
+                vTaskDelay(
+                    pdMS_TO_TICKS(200)); // 短暫延遲以允許其他任務執行，並避免過於頻繁的API請求
+            }
+            ESP_LOGI(TAG_PREFETCH, "Finished prefetch cycle for center date %04d-%02d-%02d",
+                     current_center_tm.tm_year + 1900, current_center_tm.tm_mon + 1,
+                     current_center_tm.tm_mday);
+        }
+    }
+}
 
 // 日曆模塊啟動函數
 void calendar_startup(void *pvParameters) {
@@ -387,7 +578,8 @@ void calendar_startup(void *pvParameters) {
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, "pool.ntp.org");
     esp_sntp_init();
-
+    xTaskCreate(prefetch_calendar_task, "prefetch_calendar_task", 4096, NULL, 5,
+                &xPrefetchCalendarTaskHandle);
     // 等待NTP同步完成
     ESP_LOGI(TAG_CALENDAR, "Waiting for NTP time synchronization...");
     time_t now;
@@ -457,21 +649,21 @@ void calendar_startup(void *pvParameters) {
         // 等待 collect_event_data 完成的通知
         ESP_LOGI(TAG_CALENDAR, "Waiting for data ready notification on index %d",
                  CALENDAR_NOTIFY_INDEX_DATA_READY);
-        timeinfo.tm_mday += 1;
-        mktime(&timeinfo); // 標準化
-        ESP_LOGI(TAG_CALENDAR, "Prefetching for next day: %04d-%02d-%02d", timeinfo.tm_year + 1900,
-                 timeinfo.tm_mon + 1, timeinfo.tm_mday);
-        collect_event_data(timeinfo); // 預取下一天
+        xTaskNotifyWaitIndexed(CALENDAR_NOTIFY_INDEX_DATA_READY, pdFALSE, pdTRUE, NULL,
+                               portMAX_DELAY);
 
-        timeinfo.tm_mday -= 2;
-        mktime(&timeinfo); // 標準化
-        ESP_LOGI(TAG_CALENDAR, "Prefetching for previous day: %04d-%02d-%02d",
-                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
-        collect_event_data(timeinfo); // 預取前一天
+        // 通知預取任務當前的日期
+        if (xPrefetchCalendarTaskHandle) {
+            time_t current_day_for_prefetch = mktime(&timeinfo); // 獲取當前 timeinfo 的 time_t
+            ESP_LOGI(TAG_CALENDAR,
+                     "Notifying prefetch task for current day timestamp: %lld (Date: %s)",
+                     current_day_for_prefetch, ev.msg);
+            xTaskNotify(xPrefetchCalendarTaskHandle,
+                        (uint32_t)current_day_for_prefetch, // 將 time_t 作為通知值
+                        eSetValueWithOverwrite);
+        }
 
-        timeinfo.tm_mday += 1;
-        mktime(&timeinfo); // 恢復到當前顯示的日期
-        ESP_LOGW(TAG_CALENDAR, "Setting encoder callback to notify task %p on index %d",
+        ESP_LOGI(TAG_CALENDAR, "Setting encoder callback to notify task %p on index %d",
                  xCalendarStartupHandle, CALENDAR_NOTIFY_INDEX_CMD);
         ec11_set_encoder_callback(xCalendarStartupHandle);
     }
