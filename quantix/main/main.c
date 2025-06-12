@@ -93,10 +93,10 @@ void app_main() {
     }
 
     // 創建所有任務
-    xTaskCreate(screenStartup, "screenStartup", 4096, NULL, 5, NULL);
-    xTaskCreate(netStartup, "netStartup", 4096, NULL, 5, NULL);
-    xTaskCreate(ntpStartup, "ntpStartup", 4096, NULL, 5, NULL);
-    xTaskCreate(ec11Startup, "ec11Startup", 4096, NULL, 5, NULL);
+    xTaskCreate(screenStartup, "screenStartup", 4096, NULL, 4, NULL);
+    xTaskCreate(netStartup, "netStartup", 4096, NULL, 4, NULL);
+    xTaskCreate(calendar_startup, "calendar_startup", 4096, NULL, 6, &xCalendarStartupHandle);
+    xTaskCreate(ec11Startup, "ec11Startup", 4096, NULL, 4, NULL);
     font_table_init();
     ESP_LOGI("APP_MAIN", "All tasks created");
 }

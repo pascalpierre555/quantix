@@ -362,7 +362,8 @@ static void check_auth_result_callback(net_event_t *event, esp_err_t err) {
         } else {
             http_response_save_to_nvs(event->json_root, "calendar", "access_token");
             http_response_save_to_nvs(event->json_root, "calendar", "refresh_token");
-            calendar_startup();
+            xEventGroupSetBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT);
+            xTaskNotify(xCalendarStartupHandle, 0, eSetValueWithOverwrite);
         }
         cJSON_Delete(event->json_root); // 用完要釋放
     } else {
@@ -405,7 +406,7 @@ static void server_check_callback(net_event_t *event, esp_err_t err) {
                 .msg = "Server connected successfully:)",
             };
             xQueueSend(gui_queue, &ev, portMAX_DELAY);
-            calendar_startup();
+            xTaskNotify(xCalendarStartupHandle, 0, eSetValueWithOverwrite);
         } else {
             ESP_LOGE(TAG, "No 'token' in JSON response!");
         }
@@ -549,10 +550,10 @@ void netStartup(void *pvParameters) {
     wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_connection_ok);
     wifi_manager_set_callback(WM_ORDER_START_AP, &cb_wifi_required);
     net_queue = xQueueCreate(NET_QUEUE_SIZE, sizeof(net_event_t));
-    xTaskCreate(net_worker_task, "net_worker_task", 8192, NULL, 5, NULL);
-    xTaskCreate(cb_button_wifi_settings, "cb_button_wifi_settings", 2048, NULL, 5,
+    xTaskCreate(net_worker_task, "net_worker_task", 8192, NULL, 4, NULL);
+    xTaskCreate(cb_button_wifi_settings, "cb_button_wifi_settings", 2048, NULL, 4,
                 &xServerCheckCallbackHandle);
-    xTaskCreate(cb_button_setting_done, "cb_button_setting_done", 2048, NULL, 5,
+    xTaskCreate(cb_button_setting_done, "cb_button_setting_done", 2048, NULL, 4,
                 &xButtonSettingDoneHandle);
     net_event_group = xEventGroupCreate();
     vTaskDelete(NULL);

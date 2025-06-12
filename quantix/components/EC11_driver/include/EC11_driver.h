@@ -11,8 +11,6 @@
 #define RISING_EDGE 0
 #define FALLING_EDGE 1
 
-#define DEBOUNCE_TIME_US 1000
-
 #define BUTTON_PRESSED_BIT BIT0
 #define ENCODER_ROTATED_BIT BIT1
 #define ENCODER_ROTATED_DIR_BIT BIT2
@@ -22,6 +20,8 @@ extern EventGroupHandle_t input_event_group;
 
 void ec11_set_button_callback(TaskHandle_t cb);
 void ec11_clean_button_callback(void);
+void ec11_set_encoder_callback(TaskHandle_t cb);
+void ec11_clean_encoder_callback(void);
 void ec11Startup(void *pvParameters);
 
 #endif

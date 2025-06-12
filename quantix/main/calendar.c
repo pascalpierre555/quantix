@@ -1,3 +1,4 @@
+#include "EC11_driver.h"
 #include "cJSON.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
@@ -22,7 +23,13 @@
 // LittleFS 中日曆數據的目錄
 #define CALENDAR_DIR "/littlefs/calendar"
 // 用於存儲日曆事件相關 API 回應的靜態緩衝區
+
+#define CALENDAR_NOTIFY_INDEX_CMD 0
+#define CALENDAR_NOTIFY_INDEX_DATA_READY 1
+
 static char calendar_api_response_buffer[512];
+TaskHandle_t xCalendarStartupHandle;
+TaskHandle_t xPlusOneDayHandle;
 
 // 解析日期string (YYYY-MM-DD 或 YYYY-MM-DDTHH:MM:SS...) 到 struct tm 結構體
 // 成功返回 true，失敗返回 false。
@@ -201,17 +208,16 @@ esp_err_t check_calendar_settings(void) {
 void collect_event_data_callback(net_event_t *event, esp_err_t result) {
     char date[11] = {0};
     if (result == ESP_OK && event->json_root) {
-        event_t ev_cal;
-        ev_cal.event_id = SCREEN_EVENT_CALENDAR;
+        // event_t ev_cal;
+        // ev_cal.event_id = SCREEN_EVENT_CALENDAR;
         if (event->user_data) {
             strncpy(date, (char *)event->user_data, sizeof(date) - 1);
-            strncpy(ev_cal.msg, (char *)event->user_data, sizeof(ev_cal.msg) - 1);
-            ev_cal.msg[sizeof(ev_cal.msg) - 1] = '\0';
-            ESP_LOGI(TAG_CALENDAR, "Sending SCREEN_EVENT_CALENDAR event for date: %s", ev_cal.msg);
+            // ev_cal.msg[sizeof(ev_cal.msg) - 1] = '\0';
+            // ESP_LOGI(TAG_CALENDAR, "Sending SCREEN_EVENT_CALENDAR event for date: %s",
+            // ev_cal.msg);
         } else {
-            ESP_LOGW(TAG_CALENDAR,
-                     "user_data (date) for calendar UI event is NULL. Sending 'NoDate'.");
-            snprintf(ev_cal.msg, sizeof(ev_cal.msg), "NoDate");
+            ESP_LOGW(TAG_CALENDAR, "user_data (date) for calendar UI event is NULL.");
+            // snprintf(ev_cal.msg, sizeof(ev_cal.msg), "NoDate");
         }
         // 注意：我們在釋放 user_data 之前發送 UI 事件，
         // 因為queue發送會複製 event_t 結構。
@@ -241,9 +247,6 @@ void collect_event_data_callback(net_event_t *event, esp_err_t result) {
             const size_t max_missing_len = sizeof(missing_chars_total) - (HEX_KEY_LEN - 1) - 1;
 
 #define MAX_UNIQUE_DATES_PER_FETCH 100 // 每次獲取最大唯一 YYYY-MM-DD string數量
-            char unique_dates[MAX_UNIQUE_DATES_PER_FETCH][11]; // 存儲 "YYYY-MM-DD\0"
-            int unique_dates_count = 0;
-
             cJSON *event_scanner_json = NULL;
 
             char file_to_delete_path[64];
@@ -261,7 +264,6 @@ void collect_event_data_callback(net_event_t *event, esp_err_t result) {
             errno = 0; // Reset errno
 
             // 第一遍：收集缺失的字元和將受影響的唯一日期
-            font_table_init();
             cJSON_ArrayForEach(event_scanner_json, events_array) {
                 if (!cJSON_IsObject(event_scanner_json)) {
                     ESP_LOGW(TAG_CALENDAR, "Skipping non-object item in events array (scan pass).");
@@ -301,155 +303,13 @@ void collect_event_data_callback(net_event_t *event, esp_err_t result) {
                 }
                 save_event_for_date(date, event_to_save);
                 cJSON_Delete(event_to_save); // 清理複製的事件
-                //     // 2. 收集受此事件影響的唯一日期
-                //     cJSON *start_item = cJSON_GetObjectItemCaseSensitive(event_scanner_json,
-                //     "start"); cJSON *end_item =
-                //     cJSON_GetObjectItemCaseSensitive(event_scanner_json, "end");
-
-                //     const char *start_date_str_scan = NULL;
-                //     if (start_item && cJSON_IsString(start_item)) {
-                //         start_date_str_scan = start_item->valuestring;
-                //     }
-
-                //     const char *end_date_str_scan = NULL;
-                //     if (end_item && cJSON_IsString(end_item)) {
-                //         end_date_str_scan = end_item->valuestring;
-                //     }
-
-                //     if (start_date_str_scan && end_date_str_scan) {
-                //         struct tm start_tm_scan, end_tm_scan;
-                //         if (parse_date_string(start_date_str_scan, &start_tm_scan) &&
-                //             parse_date_string(end_date_str_scan, &end_tm_scan)) {
-                //             time_t start_t_scan = mktime(&start_tm_scan);
-                //             time_t end_t_scan =
-                //                 mktime(&end_tm_scan); // mktime 將 struct tm 轉換為 time_t
-                //             if (start_t_scan != (time_t)-1 && end_t_scan != (time_t)-1) {
-                //                 // 遍歷事件的每一天
-                //                 for (time_t current_t_scan = start_t_scan; current_t_scan <=
-                //                 end_t_scan;
-                //                      current_t_scan += 86400) { // 86400 秒 = 1 天
-                //                     struct tm current_tm_for_date_key;
-                //                     localtime_r(&current_t_scan, &current_tm_for_date_key);
-                //                     char date_key[11];
-                //                     // 格式化日期為 "YYYY-MM-DD"
-                //                     strftime(date_key, sizeof(date_key), "%Y-%m-%d",
-                //                              &current_tm_for_date_key);
-
-                //                     bool found = false;
-                //                     for (int i = 0; i < unique_dates_count; i++) {
-                //                         if (strcmp(unique_dates[i], date_key) == 0) {
-                //                             found = true;
-                //                             break;
-                //                         }
-                //                     }
-                //                     if (!found && unique_dates_count <
-                //                     MAX_UNIQUE_DATES_PER_FETCH) {
-                //                         strcpy(unique_dates[unique_dates_count++], date_key);
-                //                     } else if (!found) {
-                //                         ESP_LOGW(TAG_CALENDAR,
-                //                                  "Reached max unique dates limit (%d), cannot add
-                //                                  %s " "for clearing.",
-                //                                  MAX_UNIQUE_DATES_PER_FETCH, date_key);
-                //                     }
-                //                 }
-                //             }
-                //         }
-                //     } else {
-                //         ESP_LOGW(TAG_CALENDAR,
-                //                  "Event scanner: 'start' or 'end' field missing or not a
-                //                  string.");
-                //     }
-                // }
-
-                // // 清除收集到的所有唯一日期的 .json 檔案
-                // for (int i = 0; i < unique_dates_count; i++) {
-                //     char file_to_delete_path[64];
-                //     snprintf(file_to_delete_path, sizeof(file_to_delete_path), "%s/%s.json",
-                //              CALENDAR_DIR, unique_dates[i]);
-                //     if (remove(file_to_delete_path) == 0) {
-                //         ESP_LOGI(TAG_CALENDAR, "Cleared existing event file: %s",
-                //         file_to_delete_path);
-                //     } else {
-                //         // ENOENT (No such file or directory) 是正常的，表示檔案本來就不存在
-                //         if (errno != ENOENT) {
-                //             ESP_LOGW(TAG_CALENDAR, "Failed to delete %s: %s (errno %d)",
-                //                      file_to_delete_path, strerror(errno), errno);
-                //         }
-                //     }
             }
-
-            // Second pass: Save events to the (now cleared or new) daily files
-            // 第二遍：將事件保存到 (現已清除或新建的) 每日檔案中
-            // cJSON *event_json = NULL;
-            // cJSON_ArrayForEach(event_json, events_array) {
-            //     if (!cJSON_IsObject(event_json)) {
-            //         ESP_LOGW(TAG_CALENDAR, "Skipping non-object item in events array.");
-            //         continue;
-            //     }
-
-            //     cJSON *event_to_save = cJSON_Duplicate(event_json, true);
-            //     if (!event_to_save) {
-            //         ESP_LOGE(TAG_CALENDAR, "Failed to duplicate event_json for saving.");
-            //         continue;
-            //     }
-
-            // 處理摘要以查找缺失字元
-            // 這已在第一遍中完成。
-
-            // 處理日期並保存事件
-            // cJSON *start_val_item = cJSON_GetObjectItemCaseSensitive(event_json, "start");
-            // cJSON *end_val_item = cJSON_GetObjectItemCaseSensitive(event_json, "end");
-
-            // const char *start_date_str = NULL;
-            // if (start_val_item && cJSON_IsString(start_val_item)) {
-            //     start_date_str = start_val_item->valuestring;
-            // }
-
-            // const char *end_date_str = NULL;
-            // if (end_val_item && cJSON_IsString(end_val_item)) {
-            //     end_date_str = end_val_item->valuestring;
-            // }
-
-            // if (start_date_str && end_date_str) {
-            //     struct tm start_tm, end_tm;
-            //     // 解析日期。注意：strptime 處理 YYYY-MM-DD 和 YYYY-MM-DDTHH:MM:SS 格式
-            //     if (parse_date_string(start_date_str, &start_tm) &&
-            //         parse_date_string(end_date_str, &end_tm)) {
-            //         // 將 struct tm 轉換為 time_t 以方便日期算術
-            //         time_t start_t = mktime(&start_tm);
-            //         time_t end_t = mktime(&end_tm);
-
-            //         if (start_t != (time_t)-1 && end_t != (time_t)-1) {
-            //             for (time_t current_t = start_t; current_t <= end_t;
-            //                  current_t += 86400) {
-            //                 struct tm current_tm_for_save;
-            //                 localtime_r(&current_t, &current_tm_for_save);
-            //                 char date_yyyymmdd[11];
-            //                 if (strftime(date_yyyymmdd, sizeof(date_yyyymmdd), "%Y-%m-%d",
-            //                              &current_tm_for_save) > 0) {
-            //                     save_event_for_date(date_yyyymmdd, event_to_save);
-            //                 } else {
-            //                     ESP_LOGE(TAG_CALENDAR,
-            //                              "Failed to format date for saving event.");
-            //                 }
-            //             }
-            //         } else {
-            //             ESP_LOGE(TAG_CALENDAR, "Failed to convert parsed dates to time_t.");
-            //         }
-            //     } else {
-            //         ESP_LOGE(TAG_CALENDAR,
-            //                  "Failed to parse start or end date string for event (save
-            //                  pass).");
-            //     }
-            // } else {
-            //     ESP_LOGW(TAG_CALENDAR, "Event missing 'start' or 'end' string fields, or "
-            //                            "they are not strings.");
-            // }
-
-            // } // End cJSON_ArrayForEach
             // 處理完所有事件後，如果存在缺失字元，則下載它們
-            ESP_LOGI(TAG_CALENDAR, "Finished processing and saving calendar events.");
-            xQueueSend(gui_queue, &ev_cal, portMAX_DELAY); // 發送準備好的 UI 事件
+            ESP_LOGI(TAG_CALENDAR,
+                     "Finished processing and saving calendar events. Notifying on index %d.",
+                     CALENDAR_NOTIFY_INDEX_DATA_READY);
+            xTaskNotifyGiveIndexed(xCalendarStartupHandle, CALENDAR_NOTIFY_INDEX_DATA_READY);
+            // xQueueSend(gui_queue, &ev_cal, portMAX_DELAY); // 發送準備好的 UI 事件
         } else {
             ESP_LOGW(TAG_CALENDAR, "Events array is invalid or empty.");
         }
@@ -480,10 +340,8 @@ void collect_event_data_callback(net_event_t *event, esp_err_t result) {
     }
 }
 // 根據指定時間收集事件數據
-void collect_event_data(time_t time) {
+void collect_event_data(struct tm timeinfo) {
     char date[11];
-    struct tm timeinfo;
-    localtime_r(&time, &timeinfo);
     strftime(date, sizeof(date), "%Y-%m-%d", &timeinfo);
 
     // Dynamically allocate buffer for post_data
@@ -522,7 +380,33 @@ void collect_event_data(time_t time) {
 }
 
 // 日曆模塊啟動函數
-void calendar_startup(void) {
+void calendar_startup(void *pvParameters) {
+    // 等待 WiFi 連接
+    xEventGroupWaitBits(net_event_group, NET_WIFI_CONNECTED_BIT, false, true, portMAX_DELAY);
+    // 設定 NTP 伺服器和操作模式
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
+
+    // 等待NTP同步完成
+    ESP_LOGI(TAG_CALENDAR, "Waiting for NTP time synchronization...");
+    time_t now;
+    struct tm timeinfo;
+    uint32_t time_shift = 0;
+    // 初始化 timeinfo 避免在 sntp_get_sync_status() 返回 SNTP_SYNC_STATUS_RESET 時 localtime_r 出錯
+    memset(&timeinfo, 0, sizeof(struct tm));
+    localtime_r(&now, &timeinfo); // 獲取初始 (可能未同步的) 時間
+
+    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET || timeinfo.tm_year < (2023 - 1900)) {
+        vTaskDelay(200 / portTICK_PERIOD_MS); // 每2秒檢查一次
+        time(&now);
+        localtime_r(&now, &timeinfo);
+        ESP_LOGI(TAG_CALENDAR, "Current time: %04d-%02d-%02d %02d:%02d:%02d, waiting for sync...",
+                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour,
+                 timeinfo.tm_min, timeinfo.tm_sec);
+    }
+    localtime_r(&now, &timeinfo);
+    xEventGroupWaitBits(net_event_group, NET_SERVER_CONNECTED_BIT, false, true, portMAX_DELAY);
     if (check_calendar_settings() != ESP_OK) {
         event_t ev = {
             .event_id = SCREEN_EVENT_CENTER,
@@ -532,22 +416,63 @@ void calendar_startup(void) {
         userSettings();
         ESP_LOGE(TAG_CALENDAR, "Failed to read calendar settings");
     } else {
-        ESP_LOGI(TAG_CALENDAR, "Calendar settings found, proceeding with calendar setup");
-        time_t now;
-        time(&now);
-        collect_event_data(now);
+        xEventGroupSetBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT);
     }
-}
+    for (;;) {
+        xEventGroupWaitBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT, false, true,
+                            portMAX_DELAY);
+        time_shift = 0;
+        // 等待命令通知 (來自EC11或網路任務的初始信號)
+        ESP_LOGI(TAG_CALENDAR, "Waiting for command notification on index %d",
+                 CALENDAR_NOTIFY_INDEX_CMD);
+        xTaskNotifyWaitIndexed(CALENDAR_NOTIFY_INDEX_CMD, /* ulIndexToWaitOn */
+                               pdTRUE,                    /* xClearCountOnEntry */
+                               pdTRUE,                    /* xClearBitsOnExit */
+                               &time_shift,               /* pulNotificationValue */
+                               portMAX_DELAY);            /* xTicksToWait */
+        switch (time_shift) {
+        case 2:
+            timeinfo.tm_mday += 1;
+            break;
+        case 1:
+            timeinfo.tm_mday -= 1;
+            break;
+        default:
+            break;
+        }
+        // 標準化 timeinfo (處理月份/年份的進位和借位)
+        mktime(&timeinfo);
 
-// NTP (網路時間協議) 啟動任務
-void ntpStartup(void *pvParameters) {
-    // 等待 WiFi 連接
-    xEventGroupWaitBits(net_event_group, NET_WIFI_CONNECTED_BIT, false, true, portMAX_DELAY);
+        ESP_LOGI(TAG_CALENDAR,
+                 "Time shift processed, value: %" PRIu32
+                 ". Current date for data collection: %04d-%02d-%02d",
+                 time_shift, timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
+        event_t ev = {
+            .event_id = SCREEN_EVENT_CALENDAR,
+        };
+        strftime(ev.msg, 11, "%Y-%m-%d", &timeinfo);
+        xQueueSend(gui_queue, &ev, portMAX_DELAY);
+        collect_event_data(timeinfo);
 
-    // 設定 NTP 伺服器和操作模式
-    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "pool.ntp.org");
-    esp_sntp_init();
-    xEventGroupSetBits(net_event_group, NET_TIME_AVAILABLE_BIT); // 設置時間可用標誌位
-    vTaskDelete(NULL);                                           // 刪除自身任務
+        // 等待 collect_event_data 完成的通知
+        ESP_LOGI(TAG_CALENDAR, "Waiting for data ready notification on index %d",
+                 CALENDAR_NOTIFY_INDEX_DATA_READY);
+        timeinfo.tm_mday += 1;
+        mktime(&timeinfo); // 標準化
+        ESP_LOGI(TAG_CALENDAR, "Prefetching for next day: %04d-%02d-%02d", timeinfo.tm_year + 1900,
+                 timeinfo.tm_mon + 1, timeinfo.tm_mday);
+        collect_event_data(timeinfo); // 預取下一天
+
+        timeinfo.tm_mday -= 2;
+        mktime(&timeinfo); // 標準化
+        ESP_LOGI(TAG_CALENDAR, "Prefetching for previous day: %04d-%02d-%02d",
+                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
+        collect_event_data(timeinfo); // 預取前一天
+
+        timeinfo.tm_mday += 1;
+        mktime(&timeinfo); // 恢復到當前顯示的日期
+        ESP_LOGW(TAG_CALENDAR, "Setting encoder callback to notify task %p on index %d",
+                 xCalendarStartupHandle, CALENDAR_NOTIFY_INDEX_CMD);
+        ec11_set_encoder_callback(xCalendarStartupHandle);
+    }
 }

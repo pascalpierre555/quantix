@@ -120,32 +120,6 @@ void font_table_init(void) {
         // Should continue even if directory opening fails, as fonts might be downloaded later
         // return; // 不應在此處返回，允許程序繼續嘗試下載字型
     }
-
-    // while ((entry = readdir(dir)) != NULL && font_table_count < MAX_FONTS) {
-    //     if (entry->d_type != DT_REG)
-    //         continue;
-
-    //     char hex[HEX_KEY_LEN];
-    //     strncpy(hex, entry->d_name, HEX_KEY_LEN - 1);
-    //     hex[HEX_KEY_LEN - 1] = '\0';
-
-    //     char path[272];
-    //     snprintf(path, sizeof(path), "%s/%s", FONT_DIR, entry->d_name);
-    //     FILE *fp = fopen(path, "rb");
-    //     if (!fp)
-    //         continue;
-
-    //     FontEntry *e = &font_table[font_table_count];
-    //     strcpy(e->hex_key, hex);
-    //     fread(e->data, 1, FONT_SIZE, fp);
-    //     fclose(fp);
-
-    //     // 插入 hash table
-    //     font_hash_insert(hex, font_table_count);
-
-    //     font_table_count++;
-    // }
-
     if (dir) { // 僅當目錄成功打開時才關閉
         closedir(dir);
     }

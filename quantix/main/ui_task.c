@@ -170,8 +170,7 @@ void viewDisplay(void *PvParameters) {
                 break;
             case SCREEN_EVENT_CALENDAR:
                 // Re-render if it's a new view or if the date in msg has changed
-                if ((view_current != SCREEN_EVENT_CALENDAR || strcmp(displayStr, event.msg) != 0) &&
-                    (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE)) {
+                if (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE) {
 
                     strncpy(displayStr, event.msg, sizeof(displayStr) - 1); // Cache the date string
                     displayStr[sizeof(displayStr) - 1] = '\0';
@@ -345,8 +344,6 @@ void viewDisplay(void *PvParameters) {
 
                     EPD_2IN9_V2_Display(BlackImage);
                     view_current = event.event_id;
-                    EPD_2IN9_V2_Sleep();
-                    vTaskDelay(2000 / portTICK_PERIOD_MS);
                     xSemaphoreGive(xScreen);
                 }
                 break;
@@ -404,7 +401,7 @@ void screenStartup(void *pvParameters) {
     Paint_SelectImage(BlackImage);
     Paint_Clear(WHITE);
     xSemaphoreGive(xScreen);
-    xTaskCreate(viewDisplay, "viewDisplay", 4096, NULL, 5, &xViewDisplayHandle);
+    xTaskCreate(viewDisplay, "viewDisplay", 4096, NULL, 6, &xViewDisplayHandle);
     vTaskResume(xViewDisplayHandle);
     vTaskDelete(NULL);
 }

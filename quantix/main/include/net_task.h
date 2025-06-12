@@ -18,8 +18,7 @@ extern EventGroupHandle_t net_event_group;
 #define NET_WIFI_CONNECTED_BIT BIT0
 #define NET_SERVER_CONNECTED_BIT BIT1
 #define NET_TOKEN_AVAILABLE_BIT BIT2
-#define NET_TIME_AVAILABLE_BIT BIT3
-#define NET_GOOGLE_TOKEN_AVAILABLE_BIT BIT4
+#define NET_GOOGLE_TOKEN_AVAILABLE_BIT BIT3
 
 // 網路事件結構
 typedef struct net_event_t {
