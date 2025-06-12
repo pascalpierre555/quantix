@@ -2,12 +2,15 @@
 #define FS_TASK_H
 
 #include "GUI_Paint.h"
+#include "freertos/semphr.h" // For SemaphoreHandle_t
 #include <esp_err.h>
 
 #define FONT_DIR "/littlefs/fonts"
 #define FONT_SIZE 32
 #define MAX_FONTS 512
 #define HEX_KEY_LEN 8
+
+extern SemaphoreHandle_t xFontCacheMutex; // Mutex for font cache access
 
 void font_table_init(void);
 int find_missing_characters(const char *str, char *missing, int max);

@@ -169,9 +169,16 @@ void viewDisplay(void *PvParameters) {
                 }
                 break;
             case SCREEN_EVENT_CALENDAR:
-                // Re-render if it's a new view or if the date in msg has changed
-                if (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE) {
+                // 如果當前已經是日曆視圖，並且請求的日期與當前顯示的日期相同，則跳過重繪
+                if (view_current == SCREEN_EVENT_CALENDAR && strcmp(displayStr, event.msg) == 0) {
+                    ESP_LOGI(TAG, "Calendar date %s same as current, skipping full redraw.",
+                             event.msg);
+                    break; // 日期未變，跳出此case，不執行重繪
+                }
 
+                // 執行到這裡，表示需要重繪（視圖改變或日期改變）
+                if (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE) {
+                    // 更新 displayStr 為新的日期，因為我們要繪製它
                     strncpy(displayStr, event.msg, sizeof(displayStr) - 1); // Cache the date string
                     displayStr[sizeof(displayStr) - 1] = '\0';
 
@@ -194,37 +201,12 @@ void viewDisplay(void *PvParameters) {
                     // 2. Display Events from LittleFS
                     if (strcmp(displayStr, "NoDate") != 0 && strlen(displayStr) == 10) {
                         char file_path[64];
-                        // Initialize file_path to an empty string
-                        file_path[0] = '\0';
-                        size_t remaining_space = sizeof(file_path) - 1; // -1 for null terminator
-
-                        // 1. Copy CALENDAR_DIR
-                        strncpy(file_path, CALENDAR_DIR, remaining_space);
-                        file_path[remaining_space] = '\0'; // Ensure null termination
-                        size_t current_len = strlen(file_path);
-                        remaining_space = sizeof(file_path) - 1 - current_len;
-
-                        // 2. Append "/"
-                        if (remaining_space > 0) {
-                            strncat(file_path, "/", remaining_space);
-                            current_len = strlen(file_path);
-                            remaining_space = sizeof(file_path) - 1 - current_len;
-                        }
-
-                        // 3. Append displayStr (YYYY-MM-DD, which is 10 chars)
-                        // We know displayStr is 10 chars in this valid path
-                        if (remaining_space >= strlen(displayStr)) {
-                            strncat(file_path, displayStr,
-                                    strlen(displayStr)); // Append the known length
-                            current_len = strlen(file_path);
-                            remaining_space = sizeof(file_path) - 1 - current_len;
-                        }
-
-                        // 4. Append ".json"
-                        if (remaining_space >= strlen(".json")) {
-                            strncat(file_path, ".json", remaining_space);
-                        }
-                        // The string is now "<CALENDAR_DIR>/<displayStr>.json"
+                        int calendar_dir_len = strlen(CALENDAR_DIR);
+                        memcpy(file_path, CALENDAR_DIR, calendar_dir_len);
+                        file_path[calendar_dir_len] = '/';
+                        memcpy(file_path + calendar_dir_len + 1, displayStr, 10);
+                        memcpy(file_path + calendar_dir_len + 11, ".json", 5);
+                        file_path[calendar_dir_len + 16] = '\0';
 
                         ESP_LOGI(TAG, "Reading calendar events from: %s", file_path);
 
