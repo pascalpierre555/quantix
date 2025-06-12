@@ -1,7 +1,10 @@
 #include "EC11_driver.h"
 #include "cJSON.h"
+#include "driver/gpio.h"   // For GPIO configuration
+#include "driver/rtc_io.h" // For RTC GPIO pull-up/down control
 #include "esp_log.h"
-#include "esp_sntp.h"
+#include "esp_sleep.h" // For deep sleep
+#include "esp_sntp.h"  // ESP_SNTP_OPMODE_POLL etc.
 #include "font_task.h"
 #include "net_task.h"
 #include "nvs.h"
@@ -566,6 +569,63 @@ void prefetch_calendar_task(void *pvParameters) {
             ESP_LOGI(TAG_PREFETCH, "Finished prefetch cycle for center date %04d-%02d-%02d",
                      current_center_tm.tm_year + 1900, current_center_tm.tm_mon + 1,
                      current_center_tm.tm_mday);
+
+            // --- DEEP SLEEP using EXT1 wakeup ---
+            ESP_LOGI(TAG_PREFETCH, "Preparing to enter deep sleep.");
+
+            // **重要：** PIN_BUTTON, PIN_ENCODER_A, PIN_ENCODER_B 必須是 RTC GPIOs.
+            // GPIO11 (預設的 PIN_ENCODER_B) 在標準 ESP32 上不是 RTC GPIO。
+            // 請確認並按需修改 EC11_driver.h 中的引腳定義。
+            uint64_t ext1_wakeup_pins_mask =
+                (1ULL << PIN_BUTTON) | (1ULL << PIN_ENCODER_A) | (1ULL << PIN_ENCODER_B);
+
+            // ESP_EXT1_WAKEUP_ANY_LOW:  如果任何一個選定的 RTC GPIO 為低電平，則喚醒。
+            // ESP_EXT1_WAKEUP_ALL_LOW:  如果所有選定的 RTC GPIO 都為低電平，則喚醒。 (ESP-IDF
+            // v4.x+) ESP_EXT1_WAKEUP_ANY_HIGH: 如果任何一個選定的 RTC GPIO 為高電平，則喚醒。
+            // (ESP-IDF v5.x+) 根據您的 EC11 硬體行為選擇合適的模式。假設為低電平有效。
+            esp_sleep_ext1_wakeup_mode_t wakeup_mode = ESP_EXT1_WAKEUP_ANY_LOW;
+
+            ESP_LOGI(TAG_PREFETCH, "Enabling ext1 deep sleep wakeup on GPIO mask 0x%llx, mode: %s",
+                     ext1_wakeup_pins_mask,
+                     (wakeup_mode == ESP_EXT1_WAKEUP_ANY_LOW) ? "ANY_LOW" : "OTHER_MODE");
+
+            esp_err_t err_wakeup = esp_sleep_enable_ext1_wakeup(ext1_wakeup_pins_mask, wakeup_mode);
+
+            if (err_wakeup != ESP_OK) {
+                ESP_LOGE(TAG_PREFETCH, "Failed to enable ext1 wakeup: %s. Skipping deep sleep.",
+                         esp_err_to_name(err_wakeup));
+                // 如果設定喚醒失敗，則不進入睡眠，繼續下一次循環（或採取其他錯誤處理）
+                // 可能是因為引腳不是 RTC GPIO。
+                // 為了避免 CPU 忙碌等待，可以加入短暫延遲
+                vTaskDelay(pdMS_TO_TICKS(5000)); // 例如延遲5秒
+            } else {
+                // 在進入 Deep Sleep 前為喚醒引腳啟用內部上拉 (如果它們是 RTC GPIO)
+                // 在 ESP32-S3 上，GPIO9, GPIO10, GPIO11 都是 RTC GPIO。
+
+                if (rtc_gpio_is_valid_gpio(PIN_BUTTON)) {
+                    rtc_gpio_pullup_en(PIN_BUTTON);
+                    rtc_gpio_pulldown_dis(PIN_BUTTON); // 確保禁用下拉
+                    ESP_LOGI(TAG_PREFETCH, "RTC Pull-up enabled for PIN_BUTTON (GPIO%d)",
+                             PIN_BUTTON);
+                }
+                if (rtc_gpio_is_valid_gpio(PIN_ENCODER_A)) {
+                    rtc_gpio_pullup_en(PIN_ENCODER_A);
+                    rtc_gpio_pulldown_dis(PIN_ENCODER_A);
+                    ESP_LOGI(TAG_PREFETCH, "RTC Pull-up enabled for PIN_ENCODER_A (GPIO%d)",
+                             PIN_ENCODER_A);
+                }
+                if (rtc_gpio_is_valid_gpio(PIN_ENCODER_B)) {
+                    rtc_gpio_pullup_en(PIN_ENCODER_B);
+                    rtc_gpio_pulldown_dis(PIN_ENCODER_B);
+                    ESP_LOGI(TAG_PREFETCH, "RTC Pull-up enabled for PIN_ENCODER_B (GPIO%d)",
+                             PIN_ENCODER_B);
+                }
+
+                ESP_LOGI(TAG_PREFETCH, "Entering deep sleep now...");
+                vTaskDelay(pdMS_TO_TICKS(100)); // 短暫延遲以確保日誌輸出
+                esp_deep_sleep_start();
+                // esp_deep_sleep_start() 之後的程式碼不會被執行，除非喚醒失敗
+            }
         }
     }
 }
