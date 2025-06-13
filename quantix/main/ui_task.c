@@ -82,8 +82,6 @@ static void format_date_for_display(const char *yyyymmdd_str, char *out_day_str,
 }
 
 void viewDisplay(void *PvParameters) {
-    // 等待task被呼叫
-    vTaskSuspend(NULL);
     event_t event;
     uint32_t view_current = 0;
     char displayStr[MAX_MSG_LEN] = "";
@@ -368,8 +366,11 @@ void screenStartup(void *pvParameters) {
             break;
         }
     }
-    EPD_2IN9_V2_Init();
-    EPD_2IN9_V2_Clear();
+    if (!isr_woken) {
+        EPD_2IN9_V2_Init();
+        vTaskDelay(10);
+        EPD_2IN9_V2_Clear();
+    }
 
     // Create a new image cache
     UWORD Imagesize =
@@ -382,8 +383,7 @@ void screenStartup(void *pvParameters) {
     Paint_NewImage(BlackImage, EPD_2IN9_V2_WIDTH, EPD_2IN9_V2_HEIGHT, 90, WHITE);
     Paint_SelectImage(BlackImage);
     Paint_Clear(WHITE);
-    xSemaphoreGive(xScreen);
     xTaskCreate(viewDisplay, "viewDisplay", 4096, NULL, 6, &xViewDisplayHandle);
-    vTaskResume(xViewDisplayHandle);
+    xSemaphoreGive(xScreen);
     vTaskDelete(NULL);
 }

@@ -33,11 +33,9 @@
 #define CALENDAR_NOTIFY_INDEX_DATA_READY 1
 
 static char calendar_api_response_buffer[512];
-TaskHandle_t xCalendarStartupHandle;
+TaskHandle_t xCalendarPrefetchHandle;
 TaskHandle_t xPlusOneDayHandle;
-TaskHandle_t xPrefetchCalendarTaskHandle; // 新增預取任務的 Handle
-TaskHandle_t xCalendarStartupNoWifiHandle =
-    NULL; // Definition for CalenderStartupNoWifi task handle
+TaskHandle_t xCalendarDisplayHandle = NULL; // Definition for CalenderStartupNoWifi task handle
 
 // 預取快取相關定義
 #define TAG_PREFETCH "PREFETCH_CAL"
@@ -45,7 +43,7 @@ TaskHandle_t xCalendarStartupNoWifiHandle =
 #define PREFETCH_COOLDOWN_SECONDS (5 * 60) // 5 分鐘
 
 typedef struct {
-    time_t date_t;        // 日期 (標準化到午夜)
+    struct tm date_t;     // 日期 (標準化到午夜)
     time_t last_fetch_ts; // 上次擷取此日期的時間戳
 } PrefetchCacheEntry;
 
@@ -54,6 +52,8 @@ static int prefetch_cache_fill_count = 0;       // 目前快取中實際條目�
 static int prefetch_cache_next_replace_idx = 0; // 用於循環取代的索引
 
 static SemaphoreHandle_t xPrefetchCacheMutex = NULL;
+
+RTC_DATA_ATTR struct tm current_display_time;
 
 // 用於睡眠管理的事件組
 EventGroupHandle_t sleep_event_group;
@@ -339,8 +339,7 @@ void collect_event_data_callback(net_event_t *event, esp_err_t result) {
             ESP_LOGI(TAG_CALENDAR,
                      "Finished processing and saving calendar events. Notifying on index %d.",
                      CALENDAR_NOTIFY_INDEX_DATA_READY);
-            xTaskNotifyGiveIndexed(xCalendarStartupHandle, CALENDAR_NOTIFY_INDEX_DATA_READY);
-            // xQueueSend(gui_queue, &ev_cal, portMAX_DELAY); // 發送準備好的 UI 事件
+            xEventGroupSetBits(net_event_group, NET_CALENDAR_AVAILABLE_BIT);
         } else {
             ESP_LOGW(TAG_CALENDAR, "Events array is invalid or empty.");
         }
@@ -408,15 +407,6 @@ void collect_event_data(struct tm timeinfo) {
         .json_parse = 1,                // 請求 net_task 解析 JSON
     };
     xQueueSend(net_queue, &event, portMAX_DELAY);
-}
-// Helper: 標準化 time_t 到當天午夜
-static time_t normalize_to_midnight(time_t ts) {
-    struct tm ti;
-    localtime_r(&ts, &ti);
-    ti.tm_hour = 0;
-    ti.tm_min = 0;
-    ti.tm_sec = 0;
-    return mktime(&ti);
 }
 
 void deep_sleep_manager_task(void *pvParameters) {
@@ -523,7 +513,10 @@ void deep_sleep_manager_task(void *pvParameters) {
 }
 
 // Helper: 檢查是否應該預取某個日期 (考慮快取和冷卻時間)
-static bool should_prefetch_date(time_t target_date_ts) {
+static bool should_prefetch_date(struct tm target_date_ts) {
+    char date_str_log[12];
+    strftime(date_str_log, sizeof(date_str_log), "%Y-%m-%d", &target_date_ts);
+
     if (xSemaphoreTake(xPrefetchCacheMutex, portMAX_DELAY) == pdFALSE) {
         ESP_LOGE(TAG_PREFETCH, "Failed to take prefetch cache mutex");
         return false; // 如果無法獲取互斥鎖，則不預取
@@ -531,22 +524,21 @@ static bool should_prefetch_date(time_t target_date_ts) {
 
     time_t current_sys_time;
     time(&current_sys_time);
-    time_t normalized_target_date = normalize_to_midnight(target_date_ts);
 
     for (int i = 0; i < prefetch_cache_fill_count; ++i) {
-        if (prefetch_cache[i].date_t == normalized_target_date) {
+        if (prefetch_cache[i].date_t.tm_year == target_date_ts.tm_year &&
+            prefetch_cache[i].date_t.tm_mon == target_date_ts.tm_mon &&
+            prefetch_cache[i].date_t.tm_mday == target_date_ts.tm_mday) {
             if ((current_sys_time - prefetch_cache[i].last_fetch_ts) < PREFETCH_COOLDOWN_SECONDS) {
-                ESP_LOGI(TAG_PREFETCH, "Date %s already fetched within %d mins. Skipping.",
-                         asctime(localtime(&normalized_target_date)),
-                         PREFETCH_COOLDOWN_SECONDS / 60);
                 xSemaphoreGive(xPrefetchCacheMutex);
+                ESP_LOGI(TAG_PREFETCH, "Date %s already fetched within %d mins. Skipping.",
+                         date_str_log, PREFETCH_COOLDOWN_SECONDS / 60);
                 return false; // 最近擷取過
             } else {
                 prefetch_cache[i].last_fetch_ts = current_sys_time;
-                ESP_LOGI(TAG_PREFETCH, "Date %s found in cache, older than %d mins. Refetching.",
-                         asctime(localtime(&normalized_target_date)),
-                         PREFETCH_COOLDOWN_SECONDS / 60);
                 xSemaphoreGive(xPrefetchCacheMutex);
+                ESP_LOGI(TAG_PREFETCH, "Date %s found in cache, older than %d mins. Refetching.",
+                         date_str_log, PREFETCH_COOLDOWN_SECONDS / 60);
                 return true; // 超過冷卻時間，重新擷取
             }
         }
@@ -554,16 +546,15 @@ static bool should_prefetch_date(time_t target_date_ts) {
 
     // 不在快取中，新增它
     if (prefetch_cache_fill_count < MAX_PREFETCH_CACHE_SIZE) {
-        prefetch_cache[prefetch_cache_fill_count].date_t = normalized_target_date;
+        prefetch_cache[prefetch_cache_fill_count].date_t = target_date_ts;
         prefetch_cache[prefetch_cache_fill_count].last_fetch_ts = current_sys_time;
         prefetch_cache_fill_count++;
-        ESP_LOGI(TAG_PREFETCH, "Date %s not in cache. Added. Fetching.",
-                 asctime(localtime(&normalized_target_date)));
+        ESP_LOGI(TAG_PREFETCH, "Date %s not in cache. Added. Fetching.", date_str_log);
     } else {
         // 快取已滿，使用循環取代策略
         ESP_LOGW(TAG_PREFETCH, "Prefetch cache full. Replacing entry at index %d for date %s.",
-                 prefetch_cache_next_replace_idx, asctime(localtime(&normalized_target_date)));
-        prefetch_cache[prefetch_cache_next_replace_idx].date_t = normalized_target_date;
+                 prefetch_cache_next_replace_idx, date_str_log);
+        prefetch_cache[prefetch_cache_next_replace_idx].date_t = target_date_ts;
         prefetch_cache[prefetch_cache_next_replace_idx].last_fetch_ts = current_sys_time;
         prefetch_cache_next_replace_idx =
             (prefetch_cache_next_replace_idx + 1) % MAX_PREFETCH_CACHE_SIZE;
@@ -572,9 +563,43 @@ static bool should_prefetch_date(time_t target_date_ts) {
     return true;
 }
 
-// 預取日曆數據的任務
-void prefetch_calendar_task(void *pvParameters) {
-    // 在此任務開始時創建互斥鎖
+// 日曆模塊啟動函數
+void calendar_prefetch_task(void *pvParameters) {
+    // 等待 WiFi 連接
+    xEventGroupWaitBits(net_event_group, NET_WIFI_CONNECTED_BIT, false, true, portMAX_DELAY);
+    // 設定 NTP 伺服器和操作模式
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
+    // 等待NTP同步完成
+    ESP_LOGI(TAG_CALENDAR, "Waiting for NTP time synchronization...");
+    time_t now;
+    // 初始化 timeinfo 避免在 sntp_get_sync_status() 返回 SNTP_SYNC_STATUS_RESET 時 localtime_r 出錯
+    memset(&current_display_time, 0, sizeof(struct tm));
+
+    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET ||
+           current_display_time.tm_year < (2023 - 1900)) {
+        vTaskDelay(2000 / portTICK_PERIOD_MS); // 每2秒檢查一次
+        time(&now);
+        localtime_r(&now, &current_display_time);
+        ESP_LOGI(TAG_CALENDAR, "Current time: %04d-%02d-%02d %02d:%02d:%02d, waiting for sync...",
+                 current_display_time.tm_year + 1900, current_display_time.tm_mon + 1,
+                 current_display_time.tm_mday, current_display_time.tm_hour,
+                 current_display_time.tm_min, current_display_time.tm_sec);
+    }
+    xEventGroupWaitBits(net_event_group, NET_SERVER_CONNECTED_BIT, false, true, portMAX_DELAY);
+    if (check_calendar_settings() != ESP_OK) {
+        xEventGroupClearBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT);
+        event_t ev = {
+            .event_id = SCREEN_EVENT_CENTER,
+            .msg = "No calendar settings found. Generating QR code for calendar setup...",
+        };
+        xQueueSend(gui_queue, &ev, portMAX_DELAY);
+        userSettings();
+        ESP_LOGE(TAG_CALENDAR, "Failed to read calendar settings");
+    } else {
+        xEventGroupSetBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT);
+    }
     xPrefetchCacheMutex = xSemaphoreCreateMutex();
     memset(prefetch_cache, 0, sizeof(prefetch_cache)); // 初始化快取
     if (xPrefetchCacheMutex == NULL) {                 // 確保互斥鎖已創建
@@ -585,11 +610,14 @@ void prefetch_calendar_task(void *pvParameters) {
         }
         memset(prefetch_cache, 0, sizeof(prefetch_cache));
     }
-
-    time_t current_center_day_t;
-    uint32_t notification_value;
-
     for (;;) {
+        xTaskNotifyWait(pdFALSE, pdTRUE, NULL, portMAX_DELAY);
+
+        xEventGroupWaitBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT, false, true,
+                            portMAX_DELAY);
+        // 在等待新命令前，清除睡眠請求，因為我們即將處理新命令
+        xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
+
         // 檢查字體表快取使用情況
         // MAX_FONTS 是在 font_task.h 中定義的
         if (font_table_count > (MAX_FONTS * 3 / 4)) { // 超過 75%
@@ -612,254 +640,136 @@ void prefetch_calendar_task(void *pvParameters) {
 
         ESP_LOGI(TAG_PREFETCH, "Waiting for prefetch trigger notification");
         // 等待來自 calendar_startup 的通知，其中包含中心日期的 time_t
-        if (xTaskNotifyWait(0, ULONG_MAX, &notification_value, portMAX_DELAY) == pdPASS) {
-            current_center_day_t = normalize_to_midnight((time_t)notification_value);
-            struct tm current_center_tm;
-            localtime_r(&current_center_day_t, &current_center_tm);
-            ESP_LOGI(TAG_PREFETCH, "Received prefetch trigger for date: %04d-%02d-%02d",
-                     current_center_tm.tm_year + 1900, current_center_tm.tm_mon + 1,
-                     current_center_tm.tm_mday);
 
-            // 在開始預取前，如果之前有睡眠請求，先取消它，因為我們現在要忙了
-            ESP_LOGI(TAG_PREFETCH, "Clearing deep sleep request before starting prefetch cycle.");
-            xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
+        ESP_LOGI(TAG_PREFETCH, "Received prefetch trigger for date: %04d-%02d-%02d",
+                 current_display_time.tm_year + 1900, current_display_time.tm_mon + 1,
+                 current_display_time.tm_mday);
 
-            // 等待網路和 Google Token 可用
-            xEventGroupWaitBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT, pdFALSE, pdTRUE,
-                                portMAX_DELAY);
+        // 在開始預取前，如果之前有睡眠請求，先取消它，因為我們現在要忙了
+        ESP_LOGI(TAG_PREFETCH, "Clearing deep sleep request before starting prefetch cycle.");
 
-            for (int offset = 1; offset <= 5; ++offset) {
-                // 檢查是否有新的通知以中斷當前預取序列
-                if (xTaskNotifyWait(0, ULONG_MAX, &notification_value, 0) == pdPASS) {
-                    ESP_LOGI(TAG_PREFETCH,
-                             "Prefetch cycle interrupted by new date. Clearing sleep request.");
-                    xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
-                    current_center_day_t = normalize_to_midnight((time_t)notification_value);
-                    localtime_r(&current_center_day_t, &current_center_tm);
-                    ESP_LOGI(TAG_PREFETCH,
-                             "Prefetch interrupted by new trigger for date: %04d-%02d-%02d. "
-                             "Restarting prefetch.",
-                             current_center_tm.tm_year + 1900, current_center_tm.tm_mon + 1,
-                             current_center_tm.tm_mday);
-                    offset = 0; // 會在下一次迭代變成 1，重新開始
-                    xEventGroupWaitBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT, pdFALSE,
-                                        pdTRUE, portMAX_DELAY); // 再次檢查
-                    continue;
-                }
+        struct tm day_to_fetch_t = current_display_time;
+        if (should_prefetch_date(day_to_fetch_t)) {
+            ESP_LOGI(TAG_PREFETCH, "fetching for today : %04d-%02d-%02d",
+                     day_to_fetch_t.tm_year + 1900, day_to_fetch_t.tm_mon + 1,
+                     day_to_fetch_t.tm_mday);
+            collect_event_data(day_to_fetch_t); // 非同步呼叫
+        }
 
-                // 預取 後一天 (current_center_day_t + offset)
-                time_t next_day_to_fetch_t = current_center_day_t + (offset * 86400);
-                if (should_prefetch_date(next_day_to_fetch_t)) {
-                    struct tm next_tm;
-                    localtime_r(&next_day_to_fetch_t, &next_tm);
-                    ESP_LOGI(TAG_PREFETCH, "Prefetching for next day (+%d): %04d-%02d-%02d", offset,
-                             next_tm.tm_year + 1900, next_tm.tm_mon + 1, next_tm.tm_mday);
-                    collect_event_data(next_tm); // 非同步呼叫
-                }
-
-                // 再次檢查中斷
-                if (xTaskNotifyWait(0, ULONG_MAX, &notification_value, 0) == pdPASS) {
-                    ESP_LOGI(TAG_PREFETCH,
-                             "Prefetch cycle interrupted by new date. Clearing sleep request.");
-                    xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
-                    current_center_day_t = normalize_to_midnight((time_t)notification_value);
-                    localtime_r(&current_center_day_t, &current_center_tm);
-                    ESP_LOGI(TAG_PREFETCH,
-                             "Prefetch interrupted by new trigger for date: %04d-%02d-%02d. "
-                             "Restarting prefetch.",
-                             current_center_tm.tm_year + 1900, current_center_tm.tm_mon + 1,
-                             current_center_tm.tm_mday);
-                    offset = 0;
-                    xEventGroupWaitBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT, pdFALSE,
-                                        pdTRUE, portMAX_DELAY);
-                    continue;
-                }
-
-                // 預取 前一天 (current_center_day_t - offset)
-                time_t prev_day_to_fetch_t = current_center_day_t - (offset * 86400);
-                if (should_prefetch_date(prev_day_to_fetch_t)) {
-                    struct tm prev_tm;
-                    localtime_r(&prev_day_to_fetch_t, &prev_tm);
-                    ESP_LOGI(TAG_PREFETCH, "Prefetching for prev day (-%d): %04d-%02d-%02d", offset,
-                             prev_tm.tm_year + 1900, prev_tm.tm_mon + 1, prev_tm.tm_mday);
-                    collect_event_data(prev_tm); // 非同步呼叫
-                }
-                vTaskDelay(
-                    pdMS_TO_TICKS(200)); // 短暫延遲以允許其他任務執行，並避免過於頻繁的API請求
+        for (int offset = 1; offset <= 5; ++offset) {
+            // 檢查是否有新的通知以中斷當前預取序列
+            if (xTaskNotifyWait(0, ULONG_MAX, NULL, 0) == pdPASS) {
+                ESP_LOGI(TAG_PREFETCH,
+                         "Prefetch cycle interrupted by new date. Clearing sleep request.");
+                xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
+                ESP_LOGI(TAG_PREFETCH,
+                         "Prefetch interrupted by new trigger for date: %04d-%02d-%02d. "
+                         "Restarting prefetch.",
+                         current_display_time.tm_year + 1900, current_display_time.tm_mon + 1,
+                         current_display_time.tm_mday);
+                offset = 0; // 會在下一次迭代變成 1，重新開始
+                xEventGroupWaitBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT, pdFALSE,
+                                    pdTRUE,
+                                    portMAX_DELAY); // 再次檢查
+                continue;
             }
-            ESP_LOGI(TAG_PREFETCH, "Finished prefetch cycle for center date %04d-%02d-%02d",
-                     current_center_tm.tm_year + 1900, current_center_tm.tm_mon + 1,
-                     current_center_tm.tm_mday);
 
-            // 預取完成後，請求進入睡眠
-            ESP_LOGI(TAG_PREFETCH, "Prefetch cycle complete. Requesting deep sleep.");
-            xEventGroupSetBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
+            // 預取 後一天 (current_center_day_t + offset)
+            day_to_fetch_t = current_display_time;
+            day_to_fetch_t.tm_mday += offset;
+            mktime(&day_to_fetch_t);
+            if (should_prefetch_date(day_to_fetch_t)) {
+                ESP_LOGI(TAG_PREFETCH, "Prefetching for next day (+%d): %04d-%02d-%02d", offset,
+                         day_to_fetch_t.tm_year + 1900, day_to_fetch_t.tm_mon + 1,
+                         day_to_fetch_t.tm_mday);
+                collect_event_data(day_to_fetch_t); // 非同步呼叫
+            }
+
+            // 再次檢查中斷
+            if (xTaskNotifyWait(0, ULONG_MAX, NULL, 0) == pdPASS) {
+                ESP_LOGI(TAG_PREFETCH,
+                         "Prefetch cycle interrupted by new date. Clearing sleep request.");
+                xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
+                ESP_LOGI(TAG_PREFETCH,
+                         "Prefetch interrupted by new trigger for date: %04d-%02d-%02d. "
+                         "Restarting prefetch.",
+                         current_display_time.tm_year + 1900, current_display_time.tm_mon + 1,
+                         current_display_time.tm_mday);
+                offset = 0;
+                xEventGroupWaitBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT, pdFALSE,
+                                    pdTRUE, portMAX_DELAY);
+                continue;
+            }
+
+            // 預取 前一天 (current_center_day_t - offset)
+            day_to_fetch_t = current_display_time;
+            day_to_fetch_t.tm_mday -= offset;
+            mktime(&day_to_fetch_t);
+            if (should_prefetch_date(day_to_fetch_t)) {
+                ESP_LOGI(TAG_PREFETCH, "Prefetching for next day (-%d): %04d-%02d-%02d", offset,
+                         day_to_fetch_t.tm_year + 1900, day_to_fetch_t.tm_mon + 1,
+                         day_to_fetch_t.tm_mday);
+                collect_event_data(day_to_fetch_t); // 非同步呼叫
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(200)); // 短暫延遲以允許其他任務執行，並避免過於頻繁的API請求
         }
-    }
-}
+        ESP_LOGI(TAG_PREFETCH, "Finished prefetch cycle for center date %04d-%02d-%02d",
+                 current_display_time.tm_year + 1900, current_display_time.tm_mon + 1,
+                 current_display_time.tm_mday);
 
-// 日曆模塊啟動函數
-void calendar_startup(void *pvParameters) {
-    // 等待 WiFi 連接
-    xEventGroupWaitBits(net_event_group, NET_WIFI_CONNECTED_BIT, false, true, portMAX_DELAY);
-    // 設定 NTP 伺服器和操作模式
-    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "pool.ntp.org");
-    esp_sntp_init();
-    xTaskCreate(prefetch_calendar_task, "prefetch_calendar_task", 4096, NULL, 5,
-                &xPrefetchCalendarTaskHandle);
-    // 等待NTP同步完成
-    ESP_LOGI(TAG_CALENDAR, "Waiting for NTP time synchronization...");
-    time_t now;
-    struct tm timeinfo;
-    uint32_t time_shift = 0;
-    // 初始化 timeinfo 避免在 sntp_get_sync_status() 返回 SNTP_SYNC_STATUS_RESET 時 localtime_r 出錯
-    memset(&timeinfo, 0, sizeof(struct tm));
-    localtime_r(&now, &timeinfo); // 獲取初始 (可能未同步的) 時間
-
-    while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET || timeinfo.tm_year < (2023 - 1900)) {
-        vTaskDelay(200 / portTICK_PERIOD_MS); // 每2秒檢查一次
-        time(&now);
-        localtime_r(&now, &timeinfo);
-        ESP_LOGI(TAG_CALENDAR, "Current time: %04d-%02d-%02d %02d:%02d:%02d, waiting for sync...",
-                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour,
-                 timeinfo.tm_min, timeinfo.tm_sec);
-    }
-    localtime_r(&now, &timeinfo);
-    xEventGroupWaitBits(net_event_group, NET_SERVER_CONNECTED_BIT, false, true, portMAX_DELAY);
-    if (check_calendar_settings() != ESP_OK) {
-        event_t ev = {
-            .event_id = SCREEN_EVENT_CENTER,
-            .msg = "No calendar settings found. Generating QR code for calendar setup...",
-        };
-        xQueueSend(gui_queue, &ev, portMAX_DELAY);
-        userSettings();
-        ESP_LOGE(TAG_CALENDAR, "Failed to read calendar settings");
-    } else {
-        xEventGroupSetBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT);
-    }
-    for (;;) {
-        xEventGroupWaitBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT, false, true,
-                            portMAX_DELAY);
-        time_shift = 0;
-        // 等待命令通知 (來自EC11或網路任務的初始信號)
-        ESP_LOGI(TAG_CALENDAR, "Waiting for command notification on index %d",
-                 CALENDAR_NOTIFY_INDEX_CMD);
-        // 在等待新命令前，清除睡眠請求，因為我們即將處理新命令
-        ESP_LOGI(TAG_CALENDAR, "Clearing deep sleep request before waiting for new command.");
-        xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
-        xTaskNotifyWaitIndexed(CALENDAR_NOTIFY_INDEX_CMD, /* ulIndexToWaitOn */
-                               pdTRUE,                    /* xClearCountOnEntry */
-                               pdTRUE,                    /* xClearBitsOnExit */
-                               &time_shift,               /* pulNotificationValue */
-                               portMAX_DELAY);            /* xTicksToWait */
-        switch (time_shift) {
-        case 2:
-            timeinfo.tm_mday += 1;
-            break;
-        case 1:
-            timeinfo.tm_mday -= 1;
-            break;
-        default:
-            break;
-        }
-        // 標準化 timeinfo (處理月份/年份的進位和借位)
-        mktime(&timeinfo);
-
-        ESP_LOGI(TAG_CALENDAR,
-                 "Time shift processed, value: %" PRIu32
-                 ". Current date for data collection: %04d-%02d-%02d",
-                 time_shift, timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
-        collect_event_data(timeinfo);
-
-        // 等待 collect_event_data 完成的通知
-        ESP_LOGI(TAG_CALENDAR, "Waiting for data ready notification on index %d",
-                 CALENDAR_NOTIFY_INDEX_DATA_READY);
-        xTaskNotifyWaitIndexed(CALENDAR_NOTIFY_INDEX_DATA_READY, pdFALSE, pdTRUE, NULL,
-                               500 / portTICK_PERIOD_MS);
-        event_t ev = {
-            .event_id = SCREEN_EVENT_CALENDAR,
-        };
-        strftime(ev.msg, 11, "%Y-%m-%d", &timeinfo);
-        xQueueSend(gui_queue, &ev, portMAX_DELAY);
-        // 通知預取任務當前的日期
-        if (xPrefetchCalendarTaskHandle) {
-            time_t current_day_for_prefetch = mktime(&timeinfo); // 獲取當前 timeinfo 的 time_t
-            ESP_LOGI(TAG_CALENDAR,
-                     "Notifying prefetch task for current day timestamp: %lld (Date: %s)",
-                     current_day_for_prefetch, ev.msg);
-            xTaskNotify(xPrefetchCalendarTaskHandle,
-                        (uint32_t)current_day_for_prefetch, // 將 time_t 作為通知值
-                        eSetValueWithOverwrite);
-        }
-
-        ESP_LOGI(TAG_CALENDAR, "Setting encoder callback to notify task %p on index %d",
-                 xCalendarStartupHandle, CALENDAR_NOTIFY_INDEX_CMD);
-        // 處理完當前日期後，請求進入睡眠
-        ESP_LOGI(TAG_CALENDAR, "Date processing complete. Requesting deep sleep.");
+        // 預取完成後，請求進入睡眠
+        ESP_LOGI(TAG_PREFETCH, "Prefetch cycle complete. Requesting deep sleep.");
         xEventGroupSetBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
-        ec11_set_encoder_callback(xCalendarStartupHandle);
+        ec11_set_encoder_callback(xCalendarDisplayHandle);
     }
 }
 
-void CalenderStartupNoWifi(void *pvParameters) {
-    time_t now;
-    struct tm timeinfo;
+void calendar_display(void *pvParameters) {
     uint32_t time_shift = 0;
-    // 初始化 timeinfo 避免在 sntp_get_sync_status() 返回 SNTP_SYNC_STATUS_RESET 時 localtime_r 出錯
-    memset(&timeinfo, 0, sizeof(struct tm));
-    if (check_calendar_settings() != ESP_OK) {
-        event_t ev = {
-            .event_id = SCREEN_EVENT_CENTER,
-            .msg = "No calendar settings found.",
-        };
-        xQueueSend(gui_queue, &ev, portMAX_DELAY);
-    }
-    vTaskSuspend(NULL);
-    time(&now);
-    localtime_r(&now, &timeinfo); // 獲取初始 (可能未同步的) 時間
     for (;;) {
         time_shift = 0;
         // 等待命令通知 (來自EC11或網路任務的初始信號)
         ESP_LOGI(TAG_CALENDAR, "Waiting for command notification on index %d",
                  CALENDAR_NOTIFY_INDEX_CMD);
         // 在等待新命令前，清除睡眠請求
-        ESP_LOGI(TAG_CALENDAR,
-                 "NoWifi: Clearing deep sleep request before waiting for new command.");
+        ESP_LOGI(TAG_CALENDAR, "Clearing deep sleep request before waiting for new command.");
+        xTaskNotifyWait(pdTRUE, pdTRUE, &time_shift, portMAX_DELAY);
         xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
-        xTaskNotifyWaitIndexed(CALENDAR_NOTIFY_INDEX_CMD, /* ulIndexToWaitOn */
-                               pdTRUE,                    /* xClearCountOnEntry */
-                               pdTRUE,                    /* xClearBitsOnExit */
-                               &time_shift,               /* pulNotificationValue */
-                               portMAX_DELAY);            /* xTicksToWait */
+        xEventGroupWaitBits(net_event_group, NET_CALENDAR_AVAILABLE_BIT, pdFALSE, pdTRUE,
+                            portMAX_DELAY);
+        ESP_LOGI(TAG_CALENDAR, "Hi");
         switch (time_shift) {
         case 2:
-            timeinfo.tm_mday += 1;
+            current_display_time.tm_mday += 1;
             break;
         case 1:
-            timeinfo.tm_mday -= 1;
+            current_display_time.tm_mday -= 1;
             break;
         default:
             break;
         }
-        // 標準化 timeinfo (處理月份/年份的進位和借位)
-        mktime(&timeinfo);
+        // 標準化 current_display_time (處理月份/年份的進位和借位)
+        mktime(&current_display_time);
 
         ESP_LOGI(TAG_CALENDAR,
                  "Time shift processed, value: %" PRIu32
                  ". Current date for data collection: %04d-%02d-%02d",
-                 time_shift, timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
+                 time_shift, current_display_time.tm_year + 1900, current_display_time.tm_mon + 1,
+                 current_display_time.tm_mday);
         event_t ev = {
             .event_id = SCREEN_EVENT_CALENDAR,
         };
-        strftime(ev.msg, 11, "%Y-%m-%d", &timeinfo);
+        strftime(ev.msg, 11, "%Y-%m-%d", &current_display_time);
         xQueueSend(gui_queue, &ev, portMAX_DELAY);
+        if (xEventGroupGetBits(net_event_group) & NET_SERVER_CONNECTED_BIT) {
+            xTaskNotifyGive(xCalendarPrefetchHandle);
+        }
         ESP_LOGI(TAG_CALENDAR, "Setting encoder callback to notify task %p on index %d",
-                 xCalendarStartupNoWifiHandle, CALENDAR_NOTIFY_INDEX_CMD);
+                 xCalendarDisplayHandle, CALENDAR_NOTIFY_INDEX_CMD);
         // 處理完當前日期後，請求進入睡眠
         ESP_LOGI(TAG_CALENDAR, "NoWifi: Date processing complete. Requesting deep sleep.");
-        xEventGroupSetBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
-        ec11_set_encoder_callback(xCalendarStartupNoWifiHandle);
+        ec11_set_encoder_callback(xCalendarDisplayHandle);
         vTaskDelay(10);
     }
 }

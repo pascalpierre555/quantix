@@ -22,6 +22,6 @@ void ec11_set_button_callback(TaskHandle_t cb);
 void ec11_clean_button_callback(void);
 void ec11_set_encoder_callback(TaskHandle_t cb);
 void ec11_clean_encoder_callback(void);
-void ec11Startup(void *pvParameters);
+void ec11Startup(void);
 
 #endif

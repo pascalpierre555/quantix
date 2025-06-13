@@ -12,6 +12,7 @@
 extern SemaphoreHandle_t xScreen;
 extern TaskHandle_t xViewDisplayHandle;
 extern QueueHandle_t gui_queue;
+extern RTC_DATA_ATTR bool isr_woken;
 
 // 定義螢幕顯示事件
 enum {

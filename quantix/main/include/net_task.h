@@ -14,11 +14,13 @@ extern TaskHandle_t xServerCheckHandle;
 extern TaskHandle_t xServerLoginHandle;
 extern QueueHandle_t net_queue;
 extern EventGroupHandle_t net_event_group;
+extern RTC_DATA_ATTR bool isr_woken;
 
 #define NET_WIFI_CONNECTED_BIT BIT0
 #define NET_SERVER_CONNECTED_BIT BIT1
 #define NET_TOKEN_AVAILABLE_BIT BIT2
 #define NET_GOOGLE_TOKEN_AVAILABLE_BIT BIT3
+#define NET_CALENDAR_AVAILABLE_BIT BIT4
 
 // 網路事件結構
 typedef struct net_event_t {

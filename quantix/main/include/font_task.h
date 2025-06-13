@@ -11,6 +11,7 @@
 #define HEX_KEY_LEN 8
 
 extern SemaphoreHandle_t xFontCacheMutex; // Mutex for font cache access
+extern RTC_DATA_ATTR bool isr_woken;
 
 void font_table_init(void);
 int find_missing_characters(const char *str, char *missing, int max);

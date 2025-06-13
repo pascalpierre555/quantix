@@ -334,29 +334,12 @@ void cb_button_continue_without_wifi(void *pvParameters) {
     for (;;) {
         // Wait for a notification, presumably from an ISR (e.g., EC11 button press)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-        ESP_LOGI(TAG, "cb_button_continue_without_wifi triggered by notification.");
-
         // It's good practice to clean the button callback if this action is one-shot
         // or if another callback should take over.
         ec11_clean_button_callback();
 
-        ESP_LOGI(TAG, "Attempting to suspend calendar_startup and resume CalenderStartupNoWifi.");
-
-        if (xCalendarStartupHandle != NULL) {
-            ESP_LOGI(TAG, "Suspending calendar_startup task (Handle: %p)", xCalendarStartupHandle);
-            vTaskSuspend(xCalendarStartupHandle);
-        } else {
-            ESP_LOGW(TAG, "xCalendarStartupHandle is NULL, cannot suspend.");
-        }
-
-        if (xCalendarStartupNoWifiHandle != NULL) {
-            ESP_LOGI(TAG, "Resuming CalenderStartupNoWifi task (Handle: %p)",
-                     xCalendarStartupNoWifiHandle);
-            vTaskResume(xCalendarStartupNoWifiHandle);
-            xTaskNotifyIndexed(xCalendarStartupNoWifiHandle, 0, 0, eSetValueWithOverwrite);
-        } else {
-            ESP_LOGW(TAG, "xCalendarStartupNoWifiHandle is NULL, cannot resume.");
+        if (!isr_woken) {
+            xTaskNotify(xCalendarDisplayHandle, 0, eSetValueWithOverwrite);
         }
     }
 }
@@ -390,7 +373,10 @@ static void check_auth_result_callback(net_event_t *event, esp_err_t err) {
             http_response_save_to_nvs(event->json_root, "calendar", "access_token");
             http_response_save_to_nvs(event->json_root, "calendar", "refresh_token");
             xEventGroupSetBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT);
-            xTaskNotify(xCalendarStartupHandle, 0, eSetValueWithOverwrite);
+            xTaskNotifyGive(xCalendarPrefetchHandle);
+            if (!isr_woken) {
+                xTaskNotify(xCalendarDisplayHandle, 0, eSetValueWithOverwrite);
+            }
         }
         cJSON_Delete(event->json_root); // 用完要釋放
     } else {
@@ -428,12 +414,17 @@ static void server_check_callback(net_event_t *event, esp_err_t err) {
             ESP_LOGI(TAG, "Login success, token saved.");
             xEventGroupSetBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
             xEventGroupSetBits(net_event_group, NET_SERVER_CONNECTED_BIT);
-            event_t ev = {
-                .event_id = SCREEN_EVENT_CENTER,
-                .msg = "Server connected successfully:)",
-            };
-            xQueueSend(gui_queue, &ev, portMAX_DELAY);
-            xTaskNotify(xCalendarStartupHandle, 0, eSetValueWithOverwrite);
+            if (!isr_woken) {
+                event_t ev = {
+                    .event_id = SCREEN_EVENT_CENTER,
+                    .msg = "Server connected successfully:)",
+                };
+                xQueueSend(gui_queue, &ev, portMAX_DELAY);
+            }
+            xTaskNotifyGive(xCalendarPrefetchHandle);
+            if (!isr_woken) {
+                xTaskNotify(xCalendarDisplayHandle, 0, eSetValueWithOverwrite);
+            }
         } else {
             ESP_LOGE(TAG, "No 'token' in JSON response!");
         }
@@ -492,11 +483,13 @@ void cb_connection_ok(void *pvParameter) {
 
     ESP_LOGI(TAG, "I have a connection and my IP is %s!", str_ip);
     xEventGroupSetBits(net_event_group, NET_WIFI_CONNECTED_BIT);
-    event_t ev = {
-        .event_id = SCREEN_EVENT_CENTER,
-        .msg = "WiFi connected:)",
-    };
-    xQueueSend(gui_queue, &ev, portMAX_DELAY);
+    if (!isr_woken) {
+        event_t ev = {
+            .event_id = SCREEN_EVENT_CENTER,
+            .msg = "WiFi connected:)",
+        };
+        xQueueSend(gui_queue, &ev, portMAX_DELAY);
+    }
     xSemaphoreGive(xWifi);
     server_check(); // 檢查伺服器連線
 }
@@ -576,6 +569,5 @@ void netStartup(void *pvParameters) {
                 &xButtonSettingDoneHandle);
     xTaskCreate(cb_button_continue_without_wifi, "cb_button_continue_without_wifi", 2048, NULL, 4,
                 &xCbContinueNoWifiHandle);
-    net_event_group = xEventGroupCreate();
     vTaskDelete(NULL);
 }

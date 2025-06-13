@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <sys/stat.h> // For mkdir and stat
 
+RTC_DATA_ATTR bool isr_woken = false;
+
 static const char *TAG_MAIN = "APP_MAIN";
 
 void app_main() {
@@ -102,22 +104,37 @@ void app_main() {
         ESP_LOGE(TAG_MAIN, "Failed to create sleep_event_group!");
         // 處理錯誤，可能中止
     }
+    net_event_group = xEventGroupCreate();
+    if (net_event_group == NULL) {
+        ESP_LOGE(TAG_MAIN, "Failed to create net_event_group!");
+        // 處理錯誤，可能中止
+    }
 
     // 檢查喚醒原因
     esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
     switch (wakeup_cause) {
     case ESP_SLEEP_WAKEUP_EXT1: {
         uint64_t wakeup_pin_mask = esp_sleep_get_ext1_wakeup_status();
+        isr_woken = true;
         ESP_LOGI(TAG_MAIN, "Woke up from deep sleep by EXT1. Wakeup pin mask: 0x%llx",
                  wakeup_pin_mask);
+        xTaskCreate(screenStartup, "screenStartup", 4096, NULL, 6, NULL);
+        xTaskCreate(calendar_display, "calendar_display", 4096, NULL, 6, &xCalendarDisplayHandle);
+        ec11Startup();
+        font_table_init();
+        xEventGroupSetBits(net_event_group, NET_CALENDAR_AVAILABLE_BIT);
         if (wakeup_pin_mask & (1ULL << PIN_BUTTON)) {
             ESP_LOGI(TAG_MAIN, "Wakeup caused by PIN_BUTTON (GPIO %d)", PIN_BUTTON);
         }
         if (wakeup_pin_mask & (1ULL << PIN_ENCODER_A)) {
             ESP_LOGI(TAG_MAIN, "Wakeup caused by PIN_ENCODER_A (GPIO %d)", PIN_ENCODER_A);
+            xTaskNotify(xCalendarDisplayHandle, 1, eSetValueWithOverwrite);
+            ec11_set_encoder_callback(xCalendarDisplayHandle);
         }
         if (wakeup_pin_mask & (1ULL << PIN_ENCODER_B)) {
             ESP_LOGI(TAG_MAIN, "Wakeup caused by PIN_ENCODER_B (GPIO %d)", PIN_ENCODER_B);
+            xTaskNotify(xCalendarDisplayHandle, 2, eSetValueWithOverwrite);
+            ec11_set_encoder_callback(xCalendarDisplayHandle);
         }
         // 在此處可以根據喚醒的腳位執行特定操作
         break;
@@ -131,17 +148,10 @@ void app_main() {
             // 僅在初次啟動時創建所有主要應用任務
             // 和新的睡眠管理任務
             ESP_LOGI(TAG_MAIN, "Initial boot (power-on reset or undefined wakeup cause).");
-            xTaskCreate(screenStartup, "screenStartup", 4096, NULL, 4, NULL);
-            xTaskCreate(netStartup, "netStartup", 4096, NULL, 4, NULL);
-            xTaskCreate(calendar_startup, "calendar_startup", 4096, NULL, 6,
-                        &xCalendarStartupHandle);
-            xTaskCreate(CalenderStartupNoWifi, "CalenderStartupNoWifi", 4096, NULL, 5,
-                        &xCalendarStartupNoWifiHandle); // Create CalenderStartupNoWifi task
-            xTaskCreate(ec11Startup, "ec11Startup", 4096, NULL, 4, NULL);
-            xTaskCreate(prefetch_calendar_task, "prefetch_calendar_task", 4096, NULL, 6,
-                        &xPrefetchCalendarTaskHandle); // 保持其優先順序，因為它執行網路操作
-            // 創建低優先順序的睡眠管理任務
-            xTaskCreate(deep_sleep_manager_task, "deep_sleep_mgr", 4096, NULL, 2, NULL);
+            xTaskCreate(screenStartup, "screenStartup", 4096, NULL, 6, NULL);
+            xTaskCreate(calendar_display, "calendar_display", 4096, NULL, 6,
+                        &xCalendarDisplayHandle); // Create CalenderStartupNoWifi task
+            ec11Startup();
             font_table_init();
             ESP_LOGI(TAG_MAIN, "All tasks created");
         } else {
@@ -157,4 +167,9 @@ void app_main() {
         // 任何非深度睡眠喚醒的通用啟動邏輯可以放在這裡
         break;
     }
+    xTaskCreate(netStartup, "netStartup", 4096, NULL, 5, NULL);
+    xTaskCreate(calendar_prefetch_task, "calendar_prefetch_task", 4096, NULL, 5,
+                &xCalendarPrefetchHandle);
+    // 創建低優先順序的睡眠管理任務
+    xTaskCreate(deep_sleep_manager_task, "deep_sleep_mgr", 4096, NULL, 2, NULL);
 }

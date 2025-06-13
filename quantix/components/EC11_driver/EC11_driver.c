@@ -43,7 +43,10 @@ void ec11_clean_button_callback(void) { ec11_handler.button_callback = NULL; }
 
 void ec11_set_encoder_callback(TaskHandle_t cb) { ec11_handler.encoder_callback = cb; }
 
-void ec11_clean_encoder_callback(void) { ec11_handler.encoder_callback = NULL; }
+void ec11_clean_encoder_callback(void) {
+    ESP_LOGI(TAG, "Cleaning encoder callback");
+    ec11_handler.encoder_callback = NULL;
+}
 
 #define DEBOUNCE_TIME_US 1000
 #define DEBOUNCE_TIME_US_BUTTON 50000
@@ -81,28 +84,28 @@ void IRAM_ATTR encoder_isr_b(void *arg) {
 
 void ec11_task(void *pvParameters) {
     for (;;) {
-        // ESP_LOGI(TAG, "EC11 running");
+        ESP_LOGI(TAG, "EC11 running %d, %d, %d", ec11_handler.encoder_callback ? 1 : 0,
+                 ec11_handler.last_encoder_state_a, ec11_handler.last_encoder_state_b);
         xTaskNotifyWait(pdFALSE, pdTRUE, NULL, portMAX_DELAY);
         if ((ec11_handler.last_encoder_state_a & 0x01) &&
             (ec11_handler.last_encoder_state_b & 0x01)) {
             ec11_handler.last_encoder_state_a = 0;
             ec11_handler.last_encoder_state_b = 0;
             if (ec11_handler.sec_last_encoder_time_a > ec11_handler.sec_last_encoder_time_b) {
-                xTaskNotifyIndexed(ec11_handler.encoder_callback, 0, 1, eSetValueWithoutOverwrite);
+                xTaskNotify(ec11_handler.encoder_callback, 1, eSetValueWithOverwrite);
                 ESP_LOGI(TAG, "CW");
             } else if (ec11_handler.sec_last_encoder_time_b >
                        ec11_handler.sec_last_encoder_time_a) {
-                xTaskNotifyIndexed(ec11_handler.encoder_callback, 0, 2, eSetValueWithoutOverwrite);
+                xTaskNotify(ec11_handler.encoder_callback, 2, eSetValueWithOverwrite);
                 ESP_LOGI(TAG, "CCW");
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(1000 / portTICK_PERIOD_MS));
     }
 }
 
-void ec11Startup(void *pvParameters) {
+void ec11Startup(void) {
     ec11_init(&ec11_handler);
-
     gpio_config_t io_conf = {.intr_type = GPIO_INTR_NEGEDGE,
                              .mode = GPIO_MODE_INPUT,
                              .pull_up_en = 1,
@@ -119,5 +122,4 @@ void ec11Startup(void *pvParameters) {
     gpio_isr_handler_add(PIN_ENCODER_A, encoder_isr_a, NULL);
     gpio_isr_handler_add(PIN_ENCODER_B, encoder_isr_b, NULL);
     xTaskCreate(ec11_task, "ec11_task", 2048, NULL, 6, &xEncoderTaskHandle);
-    vTaskDelete(NULL);
 }
