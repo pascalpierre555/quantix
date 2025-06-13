@@ -6,6 +6,7 @@
 #include "esp_sleep.h" // For deep sleep
 #include "esp_sntp.h"  // ESP_SNTP_OPMODE_POLL etc.
 #include "font_task.h"
+#include "freertos/semphr.h"
 #include "net_task.h"
 #include "nvs.h"
 #include "ui_task.h"
@@ -601,6 +602,9 @@ void prefetch_calendar_task(void *pvParameters) {
                 // 為了避免 CPU 忙碌等待，可以加入短暫延遲
                 vTaskDelay(pdMS_TO_TICKS(5000)); // 例如延遲5秒
             } else {
+                ec11_clean_button_callback();
+                ec11_clean_encoder_callback();
+
                 // 在進入 Deep Sleep 前為喚醒引腳啟用內部上拉 (如果它們是 RTC GPIO)
                 // 在 ESP32-S3 上，GPIO9, GPIO10, GPIO11 都是 RTC GPIO。
 
@@ -624,9 +628,64 @@ void prefetch_calendar_task(void *pvParameters) {
                 }
 
                 ESP_LOGI(TAG_PREFETCH, "Entering deep sleep now...");
-                vTaskDelay(pdMS_TO_TICKS(100)); // 短暫延遲以確保日誌輸出
-                esp_deep_sleep_start();
-                // esp_deep_sleep_start() 之後的程式碼不會被執行，除非喚醒失敗
+                // 嘗試獲取螢幕和 Wi-Fi 號誌，以確保 UI 和網路操作已暫停
+                ESP_LOGI(TAG_PREFETCH, "Checking queue states before attempting sleep...");
+                UBaseType_t gui_messages_waiting = uxQueueMessagesWaiting(gui_queue);
+                if (gui_messages_waiting > 0) {
+                    ESP_LOGW(TAG_PREFETCH, "gui_queue is not empty (%u messages pending).",
+                             gui_messages_waiting);
+                }
+                UBaseType_t net_messages_waiting = uxQueueMessagesWaiting(net_queue);
+                if (net_messages_waiting > 0) {
+                    ESP_LOGW(TAG_PREFETCH, "net_queue is not empty (%u messages pending).",
+                             net_messages_waiting);
+                }
+                ESP_LOGI(TAG_PREFETCH, "Attempting to acquire resource locks before sleep...");
+                bool screen_locked = false;
+                bool wifi_locked = false;
+
+                // 1. 嘗試獲取螢幕號誌
+                if (xSemaphoreTake(xScreen, pdMS_TO_TICKS(1000)) == pdTRUE) { // 等待最多 1 秒
+                    screen_locked = true;
+                    ESP_LOGI(TAG_PREFETCH, "Screen lock acquired.");
+
+                    // 2. 嘗試獲取 Wi-Fi 號誌 (網路任務可能需要更長時間完成)
+                    if (xSemaphoreTake(xWifi, pdMS_TO_TICKS(5000)) == pdTRUE) { // 等待最多 5 秒
+                        wifi_locked = true;
+                        ESP_LOGI(TAG_PREFETCH, "Wi-Fi lock acquired.");
+
+                        // 兩個號誌都成功獲取，準備進入睡眠
+                        ESP_LOGI(TAG_PREFETCH, "All locks acquired. Entering deep sleep...");
+                        vTaskDelay(pdMS_TO_TICKS(100)); // 短暫延遲以確保日誌輸出
+                        esp_deep_sleep_start();
+                        // 如果 esp_deep_sleep_start() 成功，以下程式碼不會執行
+                        // 如果 esp_deep_sleep_start() 失敗並返回，則應釋放號誌
+                        // xSemaphoreGive(xWifi); // 僅在 esp_deep_sleep_start 可能失敗並返回時
+                        // xSemaphoreGive(xScreen); // 僅在 esp_deep_sleep_start 可能失敗並返回時
+                    } else {
+                        ESP_LOGE(
+                            TAG_PREFETCH,
+                            "Failed to acquire Wi-Fi lock. Aborting deep sleep for this cycle.");
+                    }
+                } else {
+                    ESP_LOGE(TAG_PREFETCH,
+                             "Failed to acquire screen lock. Aborting deep sleep for this cycle.");
+                }
+
+                // 如果因為未能獲取所有鎖而沒有進入睡眠，則釋放已獲取的鎖
+                if (wifi_locked &&
+                    !screen_locked) { // 僅 wifi 鎖定，但螢幕鎖定失敗 (理論上不會到這裡，因為順序)
+                    xSemaphoreGive(xWifi);
+                } else if (screen_locked && !wifi_locked) { // 螢幕鎖定，但 wifi 鎖定失敗
+                    xSemaphoreGive(xScreen);
+                } else if (screen_locked &&
+                           wifi_locked) { // 兩個都鎖定了，但睡眠沒啟動 (例如上面邏輯有變)
+                    xSemaphoreGive(xWifi);
+                    xSemaphoreGive(xScreen);
+                }
+                // 如果執行到這裡，表示睡眠未啟動
+                ESP_LOGI(TAG_PREFETCH, "Deep sleep aborted or locks not fully acquired. Will retry "
+                                       "later or continue.");
             }
         }
     }
@@ -781,5 +840,78 @@ void CalenderStartupNoWifi(void *pvParameters) {
         ESP_LOGI(TAG_CALENDAR, "Setting encoder callback to notify task %p on index %d",
                  xCalendarStartupNoWifiHandle, CALENDAR_NOTIFY_INDEX_CMD);
         ec11_set_encoder_callback(xCalendarStartupNoWifiHandle);
+        vTaskDelay(10);
+        ESP_LOGI(TAG_PREFETCH, "Preparing to enter deep sleep.");
+
+        // **重要：** PIN_BUTTON, PIN_ENCODER_A, PIN_ENCODER_B 必須是 RTC GPIOs.
+        // GPIO11 (預設的 PIN_ENCODER_B) 在標準 ESP32 上不是 RTC GPIO。
+        // 請確認並按需修改 EC11_driver.h 中的引腳定義。
+        uint64_t ext1_wakeup_pins_mask =
+            (1ULL << PIN_BUTTON) | (1ULL << PIN_ENCODER_A) | (1ULL << PIN_ENCODER_B);
+
+        // ESP_EXT1_WAKEUP_ANY_LOW:  如果任何一個選定的 RTC GPIO 為低電平，則喚醒。
+        // ESP_EXT1_WAKEUP_ALL_LOW:  如果所有選定的 RTC GPIO 都為低電平，則喚醒。 (ESP-IDF
+        // v4.x+) ESP_EXT1_WAKEUP_ANY_HIGH: 如果任何一個選定的 RTC GPIO 為高電平，則喚醒。
+        // (ESP-IDF v5.x+) 根據您的 EC11 硬體行為選擇合適的模式。假設為低電平有效。
+        esp_sleep_ext1_wakeup_mode_t wakeup_mode = ESP_EXT1_WAKEUP_ANY_LOW;
+
+        ESP_LOGI(TAG_PREFETCH, "Enabling ext1 deep sleep wakeup on GPIO mask 0x%llx, mode: %s",
+                 ext1_wakeup_pins_mask,
+                 (wakeup_mode == ESP_EXT1_WAKEUP_ANY_LOW) ? "ANY_LOW" : "OTHER_MODE");
+
+        esp_err_t err_wakeup = esp_sleep_enable_ext1_wakeup(ext1_wakeup_pins_mask, wakeup_mode);
+
+        if (err_wakeup != ESP_OK) {
+            ESP_LOGE(TAG_PREFETCH, "NoWifi: Failed to enable ext1 wakeup: %s. Skipping deep sleep.",
+                     esp_err_to_name(err_wakeup));
+            vTaskDelay(pdMS_TO_TICKS(5000)); // 例如延遲5秒
+        } else {
+            ec11_clean_button_callback();
+            ec11_clean_encoder_callback();
+
+            if (rtc_gpio_is_valid_gpio(PIN_BUTTON)) {
+                rtc_gpio_pullup_en(PIN_BUTTON);
+                rtc_gpio_pulldown_dis(PIN_BUTTON); // 確保禁用下拉
+                ESP_LOGI(TAG_PREFETCH, "NoWifi: RTC Pull-up enabled for PIN_BUTTON (GPIO%d)",
+                         PIN_BUTTON);
+            }
+            if (rtc_gpio_is_valid_gpio(PIN_ENCODER_A)) {
+                rtc_gpio_pullup_en(PIN_ENCODER_A);
+                rtc_gpio_pulldown_dis(PIN_ENCODER_A);
+                ESP_LOGI(TAG_PREFETCH, "NoWifi: RTC Pull-up enabled for PIN_ENCODER_A (GPIO%d)",
+                         PIN_ENCODER_A);
+            }
+            if (rtc_gpio_is_valid_gpio(PIN_ENCODER_B)) {
+                rtc_gpio_pullup_en(PIN_ENCODER_B);
+                rtc_gpio_pulldown_dis(PIN_ENCODER_B);
+                ESP_LOGI(TAG_PREFETCH, "NoWifi: RTC Pull-up enabled for PIN_ENCODER_B (GPIO%d)",
+                         PIN_ENCODER_B);
+            }
+
+            ESP_LOGI(TAG_PREFETCH, "NoWifi: Attempting to acquire screen lock before sleep...");
+            // 在無 Wi-Fi 模式下，我們主要關心螢幕操作。
+            // 檢查 gui_queue 是否為空
+            UBaseType_t gui_nowifi_messages_waiting = uxQueueMessagesWaiting(gui_queue);
+            if (gui_nowifi_messages_waiting > 0) {
+                ESP_LOGW(TAG_PREFETCH, "NoWifi: gui_queue is not empty (%u messages pending).",
+                         gui_nowifi_messages_waiting);
+            }
+            // net_queue 在此模式下通常不活躍，但如果需要也可以檢查
+            // 如果 net_worker_task 在此模式下也可能有活動，則也應獲取 xWifi。
+            if (xSemaphoreTake(xScreen, pdMS_TO_TICKS(1000)) == pdTRUE) { // 等待最多 1 秒
+                ESP_LOGI(TAG_PREFETCH, "NoWifi: Screen lock acquired.");
+
+                ESP_LOGI(TAG_PREFETCH, "NoWifi: Entering deep sleep now...");
+                vTaskDelay(pdMS_TO_TICKS(100)); // 短暫延遲以確保日誌輸出
+                esp_deep_sleep_start();
+                // 如果 esp_deep_sleep_start() 成功，以下程式碼不會執行
+                // xSemaphoreGive(xScreen); // 僅在 esp_deep_sleep_start 可能失敗並返回時
+            } else {
+                ESP_LOGE(
+                    TAG_PREFETCH,
+                    "NoWifi: Failed to acquire screen lock. Aborting deep sleep for this cycle.");
+                // 如果螢幕鎖獲取失敗，則它沒有被持有，不需要釋放。
+            }
+        }
     }
 }

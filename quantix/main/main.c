@@ -3,6 +3,7 @@
 #include "esp_err.h"
 #include "esp_littlefs.h"
 #include "esp_log.h"
+#include "esp_sleep.h" // For deep sleep wakeup cause
 #include "font_task.h"
 #include "net_task.h"
 #include "nvs_flash.h"
@@ -15,6 +16,8 @@
 #include <stdlib.h>
 #include <sys/stat.h> // For mkdir and stat
 
+static const char *TAG_MAIN = "APP_MAIN";
+
 void app_main() {
 
     esp_err_t ret = nvs_flash_init();
@@ -25,7 +28,7 @@ void app_main() {
     }
     ESP_ERROR_CHECK(ret);
 
-    ESP_LOGI("APP_MAIN", "Initializing LittleFS");
+    ESP_LOGI(TAG_MAIN, "Initializing LittleFS");
     esp_vfs_littlefs_conf_t conf = {
         .base_path = "/littlefs",       // LittleFS 掛載點
         .partition_label = "storage",   // 對應 partitions.csv 中的標籤
@@ -38,11 +41,11 @@ void app_main() {
 
     if (ret_fs != ESP_OK) {
         if (ret_fs == ESP_FAIL) {
-            ESP_LOGE("APP_MAIN", "Failed to mount or format LittleFS filesystem");
+            ESP_LOGE(TAG_MAIN, "Failed to mount or format LittleFS filesystem");
         } else if (ret_fs == ESP_ERR_NOT_FOUND) {
-            ESP_LOGE("APP_MAIN", "Failed to find LittleFS partition");
+            ESP_LOGE(TAG_MAIN, "Failed to find LittleFS partition");
         } else {
-            ESP_LOGE("APP_MAIN", "Failed to initialize LittleFS (%s)", esp_err_to_name(ret_fs));
+            ESP_LOGE(TAG_MAIN, "Failed to initialize LittleFS (%s)", esp_err_to_name(ret_fs));
         }
         // 根據您的應用需求處理錯誤，例如中止程式或限制功能
     } else {
@@ -50,25 +53,25 @@ void app_main() {
         // 檢查並創建字型目錄
         struct stat st = {0};
         if (stat(FONT_DIR, &st) == -1) {
-            ESP_LOGI("APP_MAIN", "Font directory %s not found, creating...", FONT_DIR);
+            ESP_LOGI(TAG_MAIN, "Font directory %s not found, creating...", FONT_DIR);
             if (mkdir(FONT_DIR, 0755) != 0) {
-                ESP_LOGE("APP_MAIN", "Failed to create font directory %s: %s", FONT_DIR,
+                ESP_LOGE(TAG_MAIN, "Failed to create font directory %s: %s", FONT_DIR,
                          strerror(errno));
                 // 根據您的應用需求處理錯誤
             } else {
-                ESP_LOGI("APP_MAIN", "Font directory %s created successfully.", FONT_DIR);
+                ESP_LOGI(TAG_MAIN, "Font directory %s created successfully.", FONT_DIR);
             }
         } else {
-            ESP_LOGI("APP_MAIN", "Font directory %s already exists.", FONT_DIR);
+            ESP_LOGI(TAG_MAIN, "Font directory %s already exists.", FONT_DIR);
         }
         // 檢查並創建日曆目錄
         if (stat(CALENDAR_DIR, &st) == -1) {
-            ESP_LOGI("APP_MAIN", "Calendar directory %s not found, creating...", CALENDAR_DIR);
+            ESP_LOGI(TAG_MAIN, "Calendar directory %s not found, creating...", CALENDAR_DIR);
             if (mkdir(CALENDAR_DIR, 0755) != 0) {
-                ESP_LOGE("APP_MAIN", "Failed to create calendar directory %s: %s", CALENDAR_DIR,
+                ESP_LOGE(TAG_MAIN, "Failed to create calendar directory %s: %s", CALENDAR_DIR,
                          strerror(errno));
             } else {
-                ESP_LOGI("APP_MAIN", "Calendar directory %s created successfully.", CALENDAR_DIR);
+                ESP_LOGI(TAG_MAIN, "Calendar directory %s created successfully.", CALENDAR_DIR);
             }
         }
     }
@@ -92,15 +95,49 @@ void app_main() {
         printf("Failed to create semaphore for wifi.\r\n");
     }
 
-    // 創建所有任務
-    xTaskCreate(screenStartup, "screenStartup", 4096, NULL, 4, NULL);
-    xTaskCreate(netStartup, "netStartup", 4096, NULL, 4, NULL);
-    xTaskCreate(calendar_startup, "calendar_startup", 4096, NULL, 6, &xCalendarStartupHandle);
-    xTaskCreate(CalenderStartupNoWifi, "CalenderStartupNoWifi", 4096, NULL, 5,
-                &xCalendarStartupNoWifiHandle); // Create CalenderStartupNoWifi task
-    xTaskCreate(ec11Startup, "ec11Startup", 4096, NULL, 4, NULL);
-    xTaskCreate(prefetch_calendar_task, "prefetch_calendar_task", 4096, NULL, 6,
-                &xPrefetchCalendarTaskHandle);
-    font_table_init();
-    ESP_LOGI("APP_MAIN", "All tasks created");
+    // 檢查喚醒原因
+    esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
+    switch (wakeup_cause) {
+    case ESP_SLEEP_WAKEUP_EXT1: {
+        uint64_t wakeup_pin_mask = esp_sleep_get_ext1_wakeup_status();
+        ESP_LOGI(TAG_MAIN, "Woke up from deep sleep by EXT1. Wakeup pin mask: 0x%llx",
+                 wakeup_pin_mask);
+        if (wakeup_pin_mask & (1ULL << PIN_BUTTON)) {
+            ESP_LOGI(TAG_MAIN, "Wakeup caused by PIN_BUTTON (GPIO %d)", PIN_BUTTON);
+        }
+        if (wakeup_pin_mask & (1ULL << PIN_ENCODER_A)) {
+            ESP_LOGI(TAG_MAIN, "Wakeup caused by PIN_ENCODER_A (GPIO %d)", PIN_ENCODER_A);
+        }
+        if (wakeup_pin_mask & (1ULL << PIN_ENCODER_B)) {
+            ESP_LOGI(TAG_MAIN, "Wakeup caused by PIN_ENCODER_B (GPIO %d)", PIN_ENCODER_B);
+        }
+        // 在此處可以根據喚醒的腳位執行特定操作
+        break;
+    }
+    case ESP_SLEEP_WAKEUP_TIMER:
+        ESP_LOGI(TAG_MAIN, "Woke up from deep sleep by timer.");
+        break;
+    // 其他喚醒原因，通常視為正常啟動或初次啟動
+    default:
+        if (wakeup_cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
+            ESP_LOGI(TAG_MAIN, "Initial boot (power-on reset or undefined wakeup cause).");
+            xTaskCreate(screenStartup, "screenStartup", 4096, NULL, 4, NULL);
+            xTaskCreate(netStartup, "netStartup", 4096, NULL, 4, NULL);
+            xTaskCreate(calendar_startup, "calendar_startup", 4096, NULL, 6,
+                        &xCalendarStartupHandle);
+            xTaskCreate(CalenderStartupNoWifi, "CalenderStartupNoWifi", 4096, NULL, 5,
+                        &xCalendarStartupNoWifiHandle); // Create CalenderStartupNoWifi task
+            xTaskCreate(ec11Startup, "ec11Startup", 4096, NULL, 4, NULL);
+            xTaskCreate(prefetch_calendar_task, "prefetch_calendar_task", 4096, NULL, 6,
+                        &xPrefetchCalendarTaskHandle);
+            font_table_init();
+            ESP_LOGI(TAG_MAIN, "All tasks created");
+        } else {
+            ESP_LOGI(TAG_MAIN, "Normal boot or wake up from non-deep-sleep event (cause: %d).",
+                     wakeup_cause);
+            // 這可能是軟體重啟、從輕度睡眠喚醒等
+        }
+        // 任何非深度睡眠喚醒的通用啟動邏輯可以放在這裡
+        break;
+    }
 }
