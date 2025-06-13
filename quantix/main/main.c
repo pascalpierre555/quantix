@@ -11,6 +11,7 @@
 #include "wifi_manager.h"
 #include <errno.h> // For errno
 #include <freertos/FreeRTOS.h>
+#include <freertos/event_groups.h> // For EventGroupHandle_t
 #include <freertos/task.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,6 +96,13 @@ void app_main() {
         printf("Failed to create semaphore for wifi.\r\n");
     }
 
+    // 創建睡眠管理事件組
+    sleep_event_group = xEventGroupCreate();
+    if (sleep_event_group == NULL) {
+        ESP_LOGE(TAG_MAIN, "Failed to create sleep_event_group!");
+        // 處理錯誤，可能中止
+    }
+
     // 檢查喚醒原因
     esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
     switch (wakeup_cause) {
@@ -120,6 +128,8 @@ void app_main() {
     // 其他喚醒原因，通常視為正常啟動或初次啟動
     default:
         if (wakeup_cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
+            // 僅在初次啟動時創建所有主要應用任務
+            // 和新的睡眠管理任務
             ESP_LOGI(TAG_MAIN, "Initial boot (power-on reset or undefined wakeup cause).");
             xTaskCreate(screenStartup, "screenStartup", 4096, NULL, 4, NULL);
             xTaskCreate(netStartup, "netStartup", 4096, NULL, 4, NULL);
@@ -129,13 +139,20 @@ void app_main() {
                         &xCalendarStartupNoWifiHandle); // Create CalenderStartupNoWifi task
             xTaskCreate(ec11Startup, "ec11Startup", 4096, NULL, 4, NULL);
             xTaskCreate(prefetch_calendar_task, "prefetch_calendar_task", 4096, NULL, 6,
-                        &xPrefetchCalendarTaskHandle);
+                        &xPrefetchCalendarTaskHandle); // 保持其優先順序，因為它執行網路操作
+            // 創建低優先順序的睡眠管理任務
+            xTaskCreate(deep_sleep_manager_task, "deep_sleep_mgr", 4096, NULL, 2, NULL);
             font_table_init();
             ESP_LOGI(TAG_MAIN, "All tasks created");
         } else {
             ESP_LOGI(TAG_MAIN, "Normal boot or wake up from non-deep-sleep event (cause: %d).",
                      wakeup_cause);
             // 這可能是軟體重啟、從輕度睡眠喚醒等
+            // 在從深度睡眠喚醒後，我們通常需要重新初始化硬體和一些任務狀態，
+            // 但核心任務的創建通常只在冷啟動時進行。
+            // 這裡，我們確保睡眠管理器任務在喚醒後也運行（如果它不是在冷啟動時創建的）。
+            // 但根據目前的邏輯，它只在 ESP_SLEEP_WAKEUP_UNDEFINED 時創建。
+            // 如果您希望在每次喚醒時都重新啟動所有任務，則需要調整此處的邏輯。
         }
         // 任何非深度睡眠喚醒的通用啟動邏輯可以放在這裡
         break;

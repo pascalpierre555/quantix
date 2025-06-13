@@ -21,6 +21,7 @@
 
 // 標籤，用於日誌輸出
 #define TAG_CALENDAR "CALENDAR" // Changed to avoid conflict with other TAG defines
+#define TAG_SLEEP_MGR "SLEEP_MGR"
 // 日曆 API 的 URL
 #define CALENDAR_URL "https://peng-pc.tail941dce.ts.net/api/calendar"
 
@@ -53,6 +54,10 @@ static int prefetch_cache_fill_count = 0;       // 目前快取中實際條目�
 static int prefetch_cache_next_replace_idx = 0; // 用於循環取代的索引
 
 static SemaphoreHandle_t xPrefetchCacheMutex = NULL;
+
+// 用於睡眠管理的事件組
+EventGroupHandle_t sleep_event_group;
+#define DEEP_SLEEP_REQUESTED_BIT (1 << 0)
 
 // 從 font_task.c 引用，用於檢查字體表使用情況
 extern int font_table_count;
@@ -414,6 +419,109 @@ static time_t normalize_to_midnight(time_t ts) {
     return mktime(&ti);
 }
 
+void deep_sleep_manager_task(void *pvParameters) {
+    const TickType_t check_interval = pdMS_TO_TICKS(2000); // 每2秒檢查一次條件
+    ESP_LOGI(TAG_SLEEP_MGR, "Deep Sleep Manager task started.");
+
+    for (;;) {
+        // 等待直到請求睡眠
+        ESP_LOGI(TAG_SLEEP_MGR, "Waiting for deep sleep request...");
+        xEventGroupWaitBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT, pdFALSE, pdTRUE,
+                            portMAX_DELAY);
+        ESP_LOGI(TAG_SLEEP_MGR, "Deep sleep request received. Starting checks...");
+
+        bool can_sleep_now = false;
+
+        // 只要睡眠請求仍然有效，就持續檢查條件
+        while (xEventGroupGetBits(sleep_event_group) & DEEP_SLEEP_REQUESTED_BIT) {
+            can_sleep_now = false; // 重置此迭代的狀態
+
+            // 1. 檢查佇列 (非阻塞)
+            if (uxQueueMessagesWaiting(gui_queue) != 0) {
+                ESP_LOGD(TAG_SLEEP_MGR, "GUI queue not empty. Postponing sleep check.");
+                vTaskDelay(check_interval);
+                continue;
+            }
+            if (uxQueueMessagesWaiting(net_queue) != 0) {
+                ESP_LOGD(TAG_SLEEP_MGR, "Net queue not empty. Postponing sleep check.");
+                vTaskDelay(check_interval);
+                continue;
+            }
+            ESP_LOGD(TAG_SLEEP_MGR, "Queues are empty.");
+
+            // 2. 嘗試獲取號誌 (短暫超時)
+            bool screen_locked = false;
+            bool wifi_locked = false;
+
+            if (xSemaphoreTake(xScreen, pdMS_TO_TICKS(50)) == pdTRUE) {
+                screen_locked = true;
+                ESP_LOGD(TAG_SLEEP_MGR, "Screen semaphore acquired.");
+                if (xSemaphoreTake(xWifi, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    wifi_locked = true;
+                    ESP_LOGD(TAG_SLEEP_MGR, "WiFi semaphore acquired.");
+                    can_sleep_now = true;
+                } else {
+                    ESP_LOGD(TAG_SLEEP_MGR,
+                             "Could not acquire WiFi semaphore. Releasing screen lock.");
+                    xSemaphoreGive(xScreen); // 如果 wifi 獲取失敗，釋放螢幕鎖
+                    screen_locked = false;
+                }
+            } else {
+                ESP_LOGD(TAG_SLEEP_MGR, "Could not acquire screen semaphore.");
+            }
+
+            if (can_sleep_now) {
+                ESP_LOGI(TAG_SLEEP_MGR,
+                         "All conditions met. Proceeding to deep sleep configuration.");
+
+                // 3. 設定喚醒源
+                uint64_t ext1_wakeup_pins_mask =
+                    (1ULL << PIN_BUTTON) | (1ULL << PIN_ENCODER_A) | (1ULL << PIN_ENCODER_B);
+                esp_sleep_ext1_wakeup_mode_t wakeup_mode = ESP_EXT1_WAKEUP_ANY_LOW;
+                esp_err_t err_wakeup =
+                    esp_sleep_enable_ext1_wakeup(ext1_wakeup_pins_mask, wakeup_mode);
+
+                if (err_wakeup != ESP_OK) {
+                    ESP_LOGE(TAG_SLEEP_MGR,
+                             "Failed to enable ext1 wakeup: %s. Aborting sleep attempt.",
+                             esp_err_to_name(err_wakeup));
+                    if (wifi_locked)
+                        xSemaphoreGive(xWifi);
+                    if (screen_locked)
+                        xSemaphoreGive(xScreen);
+                    vTaskDelay(check_interval); // 等待後重試設定
+                    continue;                   // 繼續 while 迴圈，重新檢查條件
+                }
+
+                ec11_clean_button_callback();
+                ec11_clean_encoder_callback();
+                if (rtc_gpio_is_valid_gpio(PIN_BUTTON)) {
+                    rtc_gpio_pullup_en(PIN_BUTTON);
+                    rtc_gpio_pulldown_dis(PIN_BUTTON);
+                }
+                if (rtc_gpio_is_valid_gpio(PIN_ENCODER_A)) {
+                    rtc_gpio_pullup_en(PIN_ENCODER_A);
+                    rtc_gpio_pulldown_dis(PIN_ENCODER_A);
+                }
+                if (rtc_gpio_is_valid_gpio(PIN_ENCODER_B)) {
+                    rtc_gpio_pullup_en(PIN_ENCODER_B);
+                    rtc_gpio_pulldown_dis(PIN_ENCODER_B);
+                }
+
+                ESP_LOGI(TAG_SLEEP_MGR, "Entering deep sleep NOW.");
+                vTaskDelay(pdMS_TO_TICKS(100)); // 確保日誌輸出
+                esp_deep_sleep_start();
+                // 如果 esp_deep_sleep_start 成功，則不會執行到此處
+            } else {
+                ESP_LOGD(TAG_SLEEP_MGR, "Conditions not met for sleep. Retrying in %d ms.",
+                         (int)pdTICKS_TO_MS(check_interval));
+                vTaskDelay(check_interval);
+            }
+        } // 結束 while (DEEP_SLEEP_REQUESTED_BIT is set)
+        ESP_LOGI(TAG_SLEEP_MGR, "Sleep request cancelled or processed. Waiting for new request.");
+    } // 結束 for(;;)
+}
+
 // Helper: 檢查是否應該預取某個日期 (考慮快取和冷卻時間)
 static bool should_prefetch_date(time_t target_date_ts) {
     if (xSemaphoreTake(xPrefetchCacheMutex, portMAX_DELAY) == pdFALSE) {
@@ -512,6 +620,10 @@ void prefetch_calendar_task(void *pvParameters) {
                      current_center_tm.tm_year + 1900, current_center_tm.tm_mon + 1,
                      current_center_tm.tm_mday);
 
+            // 在開始預取前，如果之前有睡眠請求，先取消它，因為我們現在要忙了
+            ESP_LOGI(TAG_PREFETCH, "Clearing deep sleep request before starting prefetch cycle.");
+            xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
+
             // 等待網路和 Google Token 可用
             xEventGroupWaitBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT, pdFALSE, pdTRUE,
                                 portMAX_DELAY);
@@ -519,6 +631,9 @@ void prefetch_calendar_task(void *pvParameters) {
             for (int offset = 1; offset <= 5; ++offset) {
                 // 檢查是否有新的通知以中斷當前預取序列
                 if (xTaskNotifyWait(0, ULONG_MAX, &notification_value, 0) == pdPASS) {
+                    ESP_LOGI(TAG_PREFETCH,
+                             "Prefetch cycle interrupted by new date. Clearing sleep request.");
+                    xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
                     current_center_day_t = normalize_to_midnight((time_t)notification_value);
                     localtime_r(&current_center_day_t, &current_center_tm);
                     ESP_LOGI(TAG_PREFETCH,
@@ -544,6 +659,9 @@ void prefetch_calendar_task(void *pvParameters) {
 
                 // 再次檢查中斷
                 if (xTaskNotifyWait(0, ULONG_MAX, &notification_value, 0) == pdPASS) {
+                    ESP_LOGI(TAG_PREFETCH,
+                             "Prefetch cycle interrupted by new date. Clearing sleep request.");
+                    xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
                     current_center_day_t = normalize_to_midnight((time_t)notification_value);
                     localtime_r(&current_center_day_t, &current_center_tm);
                     ESP_LOGI(TAG_PREFETCH,
@@ -573,120 +691,9 @@ void prefetch_calendar_task(void *pvParameters) {
                      current_center_tm.tm_year + 1900, current_center_tm.tm_mon + 1,
                      current_center_tm.tm_mday);
 
-            // --- DEEP SLEEP using EXT1 wakeup ---
-            ESP_LOGI(TAG_PREFETCH, "Preparing to enter deep sleep.");
-
-            // **重要：** PIN_BUTTON, PIN_ENCODER_A, PIN_ENCODER_B 必須是 RTC GPIOs.
-            // GPIO11 (預設的 PIN_ENCODER_B) 在標準 ESP32 上不是 RTC GPIO。
-            // 請確認並按需修改 EC11_driver.h 中的引腳定義。
-            uint64_t ext1_wakeup_pins_mask =
-                (1ULL << PIN_BUTTON) | (1ULL << PIN_ENCODER_A) | (1ULL << PIN_ENCODER_B);
-
-            // ESP_EXT1_WAKEUP_ANY_LOW:  如果任何一個選定的 RTC GPIO 為低電平，則喚醒。
-            // ESP_EXT1_WAKEUP_ALL_LOW:  如果所有選定的 RTC GPIO 都為低電平，則喚醒。 (ESP-IDF
-            // v4.x+) ESP_EXT1_WAKEUP_ANY_HIGH: 如果任何一個選定的 RTC GPIO 為高電平，則喚醒。
-            // (ESP-IDF v5.x+) 根據您的 EC11 硬體行為選擇合適的模式。假設為低電平有效。
-            esp_sleep_ext1_wakeup_mode_t wakeup_mode = ESP_EXT1_WAKEUP_ANY_LOW;
-
-            ESP_LOGI(TAG_PREFETCH, "Enabling ext1 deep sleep wakeup on GPIO mask 0x%llx, mode: %s",
-                     ext1_wakeup_pins_mask,
-                     (wakeup_mode == ESP_EXT1_WAKEUP_ANY_LOW) ? "ANY_LOW" : "OTHER_MODE");
-
-            esp_err_t err_wakeup = esp_sleep_enable_ext1_wakeup(ext1_wakeup_pins_mask, wakeup_mode);
-
-            if (err_wakeup != ESP_OK) {
-                ESP_LOGE(TAG_PREFETCH, "Failed to enable ext1 wakeup: %s. Skipping deep sleep.",
-                         esp_err_to_name(err_wakeup));
-                // 如果設定喚醒失敗，則不進入睡眠，繼續下一次循環（或採取其他錯誤處理）
-                // 可能是因為引腳不是 RTC GPIO。
-                // 為了避免 CPU 忙碌等待，可以加入短暫延遲
-                vTaskDelay(pdMS_TO_TICKS(5000)); // 例如延遲5秒
-            } else {
-                ec11_clean_button_callback();
-                ec11_clean_encoder_callback();
-
-                // 在進入 Deep Sleep 前為喚醒引腳啟用內部上拉 (如果它們是 RTC GPIO)
-                // 在 ESP32-S3 上，GPIO9, GPIO10, GPIO11 都是 RTC GPIO。
-
-                if (rtc_gpio_is_valid_gpio(PIN_BUTTON)) {
-                    rtc_gpio_pullup_en(PIN_BUTTON);
-                    rtc_gpio_pulldown_dis(PIN_BUTTON); // 確保禁用下拉
-                    ESP_LOGI(TAG_PREFETCH, "RTC Pull-up enabled for PIN_BUTTON (GPIO%d)",
-                             PIN_BUTTON);
-                }
-                if (rtc_gpio_is_valid_gpio(PIN_ENCODER_A)) {
-                    rtc_gpio_pullup_en(PIN_ENCODER_A);
-                    rtc_gpio_pulldown_dis(PIN_ENCODER_A);
-                    ESP_LOGI(TAG_PREFETCH, "RTC Pull-up enabled for PIN_ENCODER_A (GPIO%d)",
-                             PIN_ENCODER_A);
-                }
-                if (rtc_gpio_is_valid_gpio(PIN_ENCODER_B)) {
-                    rtc_gpio_pullup_en(PIN_ENCODER_B);
-                    rtc_gpio_pulldown_dis(PIN_ENCODER_B);
-                    ESP_LOGI(TAG_PREFETCH, "RTC Pull-up enabled for PIN_ENCODER_B (GPIO%d)",
-                             PIN_ENCODER_B);
-                }
-
-                ESP_LOGI(TAG_PREFETCH, "Entering deep sleep now...");
-                // 嘗試獲取螢幕和 Wi-Fi 號誌，以確保 UI 和網路操作已暫停
-                ESP_LOGI(TAG_PREFETCH, "Checking queue states before attempting sleep...");
-                UBaseType_t gui_messages_waiting = uxQueueMessagesWaiting(gui_queue);
-                if (gui_messages_waiting > 0) {
-                    ESP_LOGW(TAG_PREFETCH, "gui_queue is not empty (%u messages pending).",
-                             gui_messages_waiting);
-                }
-                UBaseType_t net_messages_waiting = uxQueueMessagesWaiting(net_queue);
-                if (net_messages_waiting > 0) {
-                    ESP_LOGW(TAG_PREFETCH, "net_queue is not empty (%u messages pending).",
-                             net_messages_waiting);
-                }
-                ESP_LOGI(TAG_PREFETCH, "Attempting to acquire resource locks before sleep...");
-                bool screen_locked = false;
-                bool wifi_locked = false;
-
-                // 1. 嘗試獲取螢幕號誌
-                if (xSemaphoreTake(xScreen, pdMS_TO_TICKS(1000)) == pdTRUE) { // 等待最多 1 秒
-                    screen_locked = true;
-                    ESP_LOGI(TAG_PREFETCH, "Screen lock acquired.");
-
-                    // 2. 嘗試獲取 Wi-Fi 號誌 (網路任務可能需要更長時間完成)
-                    if (xSemaphoreTake(xWifi, pdMS_TO_TICKS(5000)) == pdTRUE) { // 等待最多 5 秒
-                        wifi_locked = true;
-                        ESP_LOGI(TAG_PREFETCH, "Wi-Fi lock acquired.");
-
-                        // 兩個號誌都成功獲取，準備進入睡眠
-                        ESP_LOGI(TAG_PREFETCH, "All locks acquired. Entering deep sleep...");
-                        vTaskDelay(pdMS_TO_TICKS(100)); // 短暫延遲以確保日誌輸出
-                        esp_deep_sleep_start();
-                        // 如果 esp_deep_sleep_start() 成功，以下程式碼不會執行
-                        // 如果 esp_deep_sleep_start() 失敗並返回，則應釋放號誌
-                        // xSemaphoreGive(xWifi); // 僅在 esp_deep_sleep_start 可能失敗並返回時
-                        // xSemaphoreGive(xScreen); // 僅在 esp_deep_sleep_start 可能失敗並返回時
-                    } else {
-                        ESP_LOGE(
-                            TAG_PREFETCH,
-                            "Failed to acquire Wi-Fi lock. Aborting deep sleep for this cycle.");
-                    }
-                } else {
-                    ESP_LOGE(TAG_PREFETCH,
-                             "Failed to acquire screen lock. Aborting deep sleep for this cycle.");
-                }
-
-                // 如果因為未能獲取所有鎖而沒有進入睡眠，則釋放已獲取的鎖
-                if (wifi_locked &&
-                    !screen_locked) { // 僅 wifi 鎖定，但螢幕鎖定失敗 (理論上不會到這裡，因為順序)
-                    xSemaphoreGive(xWifi);
-                } else if (screen_locked && !wifi_locked) { // 螢幕鎖定，但 wifi 鎖定失敗
-                    xSemaphoreGive(xScreen);
-                } else if (screen_locked &&
-                           wifi_locked) { // 兩個都鎖定了，但睡眠沒啟動 (例如上面邏輯有變)
-                    xSemaphoreGive(xWifi);
-                    xSemaphoreGive(xScreen);
-                }
-                // 如果執行到這裡，表示睡眠未啟動
-                ESP_LOGI(TAG_PREFETCH, "Deep sleep aborted or locks not fully acquired. Will retry "
-                                       "later or continue.");
-            }
+            // 預取完成後，請求進入睡眠
+            ESP_LOGI(TAG_PREFETCH, "Prefetch cycle complete. Requesting deep sleep.");
+            xEventGroupSetBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
         }
     }
 }
@@ -738,6 +745,9 @@ void calendar_startup(void *pvParameters) {
         // 等待命令通知 (來自EC11或網路任務的初始信號)
         ESP_LOGI(TAG_CALENDAR, "Waiting for command notification on index %d",
                  CALENDAR_NOTIFY_INDEX_CMD);
+        // 在等待新命令前，清除睡眠請求，因為我們即將處理新命令
+        ESP_LOGI(TAG_CALENDAR, "Clearing deep sleep request before waiting for new command.");
+        xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
         xTaskNotifyWaitIndexed(CALENDAR_NOTIFY_INDEX_CMD, /* ulIndexToWaitOn */
                                pdTRUE,                    /* xClearCountOnEntry */
                                pdTRUE,                    /* xClearBitsOnExit */
@@ -785,6 +795,9 @@ void calendar_startup(void *pvParameters) {
 
         ESP_LOGI(TAG_CALENDAR, "Setting encoder callback to notify task %p on index %d",
                  xCalendarStartupHandle, CALENDAR_NOTIFY_INDEX_CMD);
+        // 處理完當前日期後，請求進入睡眠
+        ESP_LOGI(TAG_CALENDAR, "Date processing complete. Requesting deep sleep.");
+        xEventGroupSetBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
         ec11_set_encoder_callback(xCalendarStartupHandle);
     }
 }
@@ -810,6 +823,10 @@ void CalenderStartupNoWifi(void *pvParameters) {
         // 等待命令通知 (來自EC11或網路任務的初始信號)
         ESP_LOGI(TAG_CALENDAR, "Waiting for command notification on index %d",
                  CALENDAR_NOTIFY_INDEX_CMD);
+        // 在等待新命令前，清除睡眠請求
+        ESP_LOGI(TAG_CALENDAR,
+                 "NoWifi: Clearing deep sleep request before waiting for new command.");
+        xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
         xTaskNotifyWaitIndexed(CALENDAR_NOTIFY_INDEX_CMD, /* ulIndexToWaitOn */
                                pdTRUE,                    /* xClearCountOnEntry */
                                pdTRUE,                    /* xClearBitsOnExit */
@@ -839,79 +856,10 @@ void CalenderStartupNoWifi(void *pvParameters) {
         xQueueSend(gui_queue, &ev, portMAX_DELAY);
         ESP_LOGI(TAG_CALENDAR, "Setting encoder callback to notify task %p on index %d",
                  xCalendarStartupNoWifiHandle, CALENDAR_NOTIFY_INDEX_CMD);
+        // 處理完當前日期後，請求進入睡眠
+        ESP_LOGI(TAG_CALENDAR, "NoWifi: Date processing complete. Requesting deep sleep.");
+        xEventGroupSetBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
         ec11_set_encoder_callback(xCalendarStartupNoWifiHandle);
         vTaskDelay(10);
-        ESP_LOGI(TAG_PREFETCH, "Preparing to enter deep sleep.");
-
-        // **重要：** PIN_BUTTON, PIN_ENCODER_A, PIN_ENCODER_B 必須是 RTC GPIOs.
-        // GPIO11 (預設的 PIN_ENCODER_B) 在標準 ESP32 上不是 RTC GPIO。
-        // 請確認並按需修改 EC11_driver.h 中的引腳定義。
-        uint64_t ext1_wakeup_pins_mask =
-            (1ULL << PIN_BUTTON) | (1ULL << PIN_ENCODER_A) | (1ULL << PIN_ENCODER_B);
-
-        // ESP_EXT1_WAKEUP_ANY_LOW:  如果任何一個選定的 RTC GPIO 為低電平，則喚醒。
-        // ESP_EXT1_WAKEUP_ALL_LOW:  如果所有選定的 RTC GPIO 都為低電平，則喚醒。 (ESP-IDF
-        // v4.x+) ESP_EXT1_WAKEUP_ANY_HIGH: 如果任何一個選定的 RTC GPIO 為高電平，則喚醒。
-        // (ESP-IDF v5.x+) 根據您的 EC11 硬體行為選擇合適的模式。假設為低電平有效。
-        esp_sleep_ext1_wakeup_mode_t wakeup_mode = ESP_EXT1_WAKEUP_ANY_LOW;
-
-        ESP_LOGI(TAG_PREFETCH, "Enabling ext1 deep sleep wakeup on GPIO mask 0x%llx, mode: %s",
-                 ext1_wakeup_pins_mask,
-                 (wakeup_mode == ESP_EXT1_WAKEUP_ANY_LOW) ? "ANY_LOW" : "OTHER_MODE");
-
-        esp_err_t err_wakeup = esp_sleep_enable_ext1_wakeup(ext1_wakeup_pins_mask, wakeup_mode);
-
-        if (err_wakeup != ESP_OK) {
-            ESP_LOGE(TAG_PREFETCH, "NoWifi: Failed to enable ext1 wakeup: %s. Skipping deep sleep.",
-                     esp_err_to_name(err_wakeup));
-            vTaskDelay(pdMS_TO_TICKS(5000)); // 例如延遲5秒
-        } else {
-            ec11_clean_button_callback();
-            ec11_clean_encoder_callback();
-
-            if (rtc_gpio_is_valid_gpio(PIN_BUTTON)) {
-                rtc_gpio_pullup_en(PIN_BUTTON);
-                rtc_gpio_pulldown_dis(PIN_BUTTON); // 確保禁用下拉
-                ESP_LOGI(TAG_PREFETCH, "NoWifi: RTC Pull-up enabled for PIN_BUTTON (GPIO%d)",
-                         PIN_BUTTON);
-            }
-            if (rtc_gpio_is_valid_gpio(PIN_ENCODER_A)) {
-                rtc_gpio_pullup_en(PIN_ENCODER_A);
-                rtc_gpio_pulldown_dis(PIN_ENCODER_A);
-                ESP_LOGI(TAG_PREFETCH, "NoWifi: RTC Pull-up enabled for PIN_ENCODER_A (GPIO%d)",
-                         PIN_ENCODER_A);
-            }
-            if (rtc_gpio_is_valid_gpio(PIN_ENCODER_B)) {
-                rtc_gpio_pullup_en(PIN_ENCODER_B);
-                rtc_gpio_pulldown_dis(PIN_ENCODER_B);
-                ESP_LOGI(TAG_PREFETCH, "NoWifi: RTC Pull-up enabled for PIN_ENCODER_B (GPIO%d)",
-                         PIN_ENCODER_B);
-            }
-
-            ESP_LOGI(TAG_PREFETCH, "NoWifi: Attempting to acquire screen lock before sleep...");
-            // 在無 Wi-Fi 模式下，我們主要關心螢幕操作。
-            // 檢查 gui_queue 是否為空
-            UBaseType_t gui_nowifi_messages_waiting = uxQueueMessagesWaiting(gui_queue);
-            if (gui_nowifi_messages_waiting > 0) {
-                ESP_LOGW(TAG_PREFETCH, "NoWifi: gui_queue is not empty (%u messages pending).",
-                         gui_nowifi_messages_waiting);
-            }
-            // net_queue 在此模式下通常不活躍，但如果需要也可以檢查
-            // 如果 net_worker_task 在此模式下也可能有活動，則也應獲取 xWifi。
-            if (xSemaphoreTake(xScreen, pdMS_TO_TICKS(1000)) == pdTRUE) { // 等待最多 1 秒
-                ESP_LOGI(TAG_PREFETCH, "NoWifi: Screen lock acquired.");
-
-                ESP_LOGI(TAG_PREFETCH, "NoWifi: Entering deep sleep now...");
-                vTaskDelay(pdMS_TO_TICKS(100)); // 短暫延遲以確保日誌輸出
-                esp_deep_sleep_start();
-                // 如果 esp_deep_sleep_start() 成功，以下程式碼不會執行
-                // xSemaphoreGive(xScreen); // 僅在 esp_deep_sleep_start 可能失敗並返回時
-            } else {
-                ESP_LOGE(
-                    TAG_PREFETCH,
-                    "NoWifi: Failed to acquire screen lock. Aborting deep sleep for this cycle.");
-                // 如果螢幕鎖獲取失敗，則它沒有被持有，不需要釋放。
-            }
-        }
     }
 }
