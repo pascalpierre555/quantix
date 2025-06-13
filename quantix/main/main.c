@@ -96,6 +96,8 @@ void app_main() {
     xTaskCreate(screenStartup, "screenStartup", 4096, NULL, 4, NULL);
     xTaskCreate(netStartup, "netStartup", 4096, NULL, 4, NULL);
     xTaskCreate(calendar_startup, "calendar_startup", 4096, NULL, 6, &xCalendarStartupHandle);
+    xTaskCreate(CalenderStartupNoWifi, "CalenderStartupNoWifi", 4096, NULL, 5,
+                &xCalendarStartupNoWifiHandle); // Create CalenderStartupNoWifi task
     xTaskCreate(ec11Startup, "ec11Startup", 4096, NULL, 4, NULL);
     xTaskCreate(prefetch_calendar_task, "prefetch_calendar_task", 4096, NULL, 6,
                 &xPrefetchCalendarTaskHandle);

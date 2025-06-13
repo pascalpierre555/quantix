@@ -477,18 +477,65 @@ UWORD Paint_DrawString_Gen(UWORD x_start, UWORD y_start, UWORD area_width, UWORD
             utf8_to_hex(utf8_char_bytes, hex_key_output, sizeof(hex_key_output));
 
             int table_idx = font_hash_find(hex_key_output);
+
+            if (table_idx < 0) { // Not in RAM cache
+                ESP_LOGD(TAG_FONT, "Font %s (hex: %s) not in RAM cache. Checking LittleFS.",
+                         utf8_char_bytes, hex_key_output);
+                char lfs_font_path[FONT_DIR_LEN + HEX_KEY_LEN + 2];
+                snprintf(lfs_font_path, sizeof(lfs_font_path), "%s/%s", FONT_DIR, hex_key_output);
+                FILE *fp_lfs = fopen(lfs_font_path, "rb");
+
+                if (fp_lfs) { // Font found on LittleFS
+                    if (font_table_count < MAX_FONTS) {
+                        // Load from LittleFS to RAM
+                        // 注意：此處直接修改 font_table 和 font_table_count，
+                        // 如果多個任務同時操作，可能需要互斥鎖保護。
+                        FontEntry *e = &font_table[font_table_count];
+                        strcpy(e->hex_key, hex_key_output);
+                        size_t bytes_read = fread(e->data, 1, FONT_SIZE, fp_lfs);
+                        if (bytes_read == FONT_SIZE) {
+                            font_hash_insert(hex_key_output, font_table_count);
+                            table_idx =
+                                font_table_count; // Update table_idx to the newly loaded font
+                            font_table_count++;
+                            ESP_LOGI(TAG_FONT,
+                                     "Loaded font %s (hex: %s) from LFS to RAM during drawing. "
+                                     "Cache: %d/%d",
+                                     utf8_char_bytes, hex_key_output, font_table_count, MAX_FONTS);
+                        } else {
+                            ESP_LOGE(TAG_FONT,
+                                     "Failed to read full font %s from LFS (%s). Read %zu bytes. "
+                                     "Drawing placeholder.",
+                                     hex_key_output, lfs_font_path, bytes_read);
+                            // table_idx remains < 0, placeholder will be drawn
+                        }
+                    } else {
+                        ESP_LOGW(
+                            TAG_FONT,
+                            "Font %s (hex: %s) on LFS, but RAM cache full. Drawing placeholder.",
+                            utf8_char_bytes, hex_key_output);
+                        // table_idx remains < 0, placeholder will be drawn
+                    }
+                    fclose(fp_lfs);
+                } else {
+                    // Font not on LittleFS either
+                    ESP_LOGW(TAG_FONT,
+                             "Font %s (hex: %s) not found in RAM or LFS. Drawing placeholder.",
+                             utf8_char_bytes, hex_key_output);
+                    // table_idx remains < 0, placeholder will be drawn
+                }
+            }
+
+            // After attempting to load from LFS, check table_idx again
             if (table_idx >= 0 && table_idx < font_table_count) {
                 // 使用 font_table 中的特定點陣圖繪製中文字元
-                // 用於繪製的實際像素寬度來自 cn_char_pixel_width_from_font
                 Paint_DrawBitMap_Paste(font_table[table_idx].data, current_x, current_y,
                                        cn_char_layout_width, char_height, 1);
             } else {
-                // 未找到字型，繪製空心矩形
+                // Font not found or couldn't be loaded, draw placeholder
                 Paint_DrawRectangle(
                     current_x + 1, current_y + 1, current_x + cn_char_layout_width - 2,
                     current_y + char_height - 2, fg, DOT_PIXEL_1X1, DRAW_FILL_EMPTY);
-                ESP_LOGW(TAG_FONT, "Chinese font %s (hex: %s) not found in RAM cache.",
-                         utf8_char_bytes, hex_key_output);
             }
             current_x += cn_char_layout_width;
             p_text += utf8_len;

@@ -47,7 +47,8 @@ TaskHandle_t xServerLoginHandle = NULL;
 TaskHandle_t xEspCheckAuthResultHandle = NULL;
 TaskHandle_t xServerCheckCallbackHandle = NULL;
 TaskHandle_t xButtonSettingDoneHandle = NULL;
-
+TaskHandle_t xCbContinueNoWifiHandle =
+    NULL; // Renamed for clarity: Handle for cb_button_continue_without_wifi task
 EventGroupHandle_t net_event_group;
 
 static int output_len = 0; // Stores number of bytes read
@@ -329,9 +330,35 @@ void cb_button_wifi_settings(void *pvParameters) {
     }
 }
 
-void cb_button_continue_without_wifi(void) {
-    ESP_LOGI(TAG, "Continuing without WiFi...");
-    ec11_clean_button_callback();
+void cb_button_continue_without_wifi(void *pvParameters) {
+    for (;;) {
+        // Wait for a notification, presumably from an ISR (e.g., EC11 button press)
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        ESP_LOGI(TAG, "cb_button_continue_without_wifi triggered by notification.");
+
+        // It's good practice to clean the button callback if this action is one-shot
+        // or if another callback should take over.
+        ec11_clean_button_callback();
+
+        ESP_LOGI(TAG, "Attempting to suspend calendar_startup and resume CalenderStartupNoWifi.");
+
+        if (xCalendarStartupHandle != NULL) {
+            ESP_LOGI(TAG, "Suspending calendar_startup task (Handle: %p)", xCalendarStartupHandle);
+            vTaskSuspend(xCalendarStartupHandle);
+        } else {
+            ESP_LOGW(TAG, "xCalendarStartupHandle is NULL, cannot suspend.");
+        }
+
+        if (xCalendarStartupNoWifiHandle != NULL) {
+            ESP_LOGI(TAG, "Resuming CalenderStartupNoWifi task (Handle: %p)",
+                     xCalendarStartupNoWifiHandle);
+            vTaskResume(xCalendarStartupNoWifiHandle);
+            xTaskNotifyIndexed(xCalendarStartupNoWifiHandle, 0, 0, eSetValueWithOverwrite);
+        } else {
+            ESP_LOGW(TAG, "xCalendarStartupNoWifiHandle is NULL, cannot resume.");
+        }
+    }
 }
 
 // 新增 callback 處理 HTTP 結果
@@ -481,16 +508,8 @@ void cb_wifi_required(void *pvParameter) {
         .msg = "WiFi required, switching to AP mode",
     };
     xQueueSend(gui_queue, &ev, portMAX_DELAY);
-    // ec11_set_button_callback(&cb_button_continue_without_wifi);
+    ec11_set_button_callback(xCbContinueNoWifiHandle);
 }
-
-/**
- * @brief 啟動網路相關功能
- *
- * 此函式會啟動 WiFi 管理器，並設置 WiFi 連線成功後的回呼函式。
- *
- * @param void
- */
 
 void server_check(void) {
     net_event_t event = {
@@ -555,6 +574,8 @@ void netStartup(void *pvParameters) {
                 &xServerCheckCallbackHandle);
     xTaskCreate(cb_button_setting_done, "cb_button_setting_done", 2048, NULL, 4,
                 &xButtonSettingDoneHandle);
+    xTaskCreate(cb_button_continue_without_wifi, "cb_button_continue_without_wifi", 2048, NULL, 4,
+                &xCbContinueNoWifiHandle);
     net_event_group = xEventGroupCreate();
     vTaskDelete(NULL);
 }

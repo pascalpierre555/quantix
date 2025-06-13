@@ -34,6 +34,8 @@ static char calendar_api_response_buffer[512];
 TaskHandle_t xCalendarStartupHandle;
 TaskHandle_t xPlusOneDayHandle;
 TaskHandle_t xPrefetchCalendarTaskHandle; // 新增預取任務的 Handle
+TaskHandle_t xCalendarStartupNoWifiHandle =
+    NULL; // Definition for CalenderStartupNoWifi task handle
 
 // 預取快取相關定義
 #define TAG_PREFETCH "PREFETCH_CAL"
@@ -699,19 +701,18 @@ void calendar_startup(void *pvParameters) {
                  "Time shift processed, value: %" PRIu32
                  ". Current date for data collection: %04d-%02d-%02d",
                  time_shift, timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
-        event_t ev = {
-            .event_id = SCREEN_EVENT_CALENDAR,
-        };
-        strftime(ev.msg, 11, "%Y-%m-%d", &timeinfo);
-        xQueueSend(gui_queue, &ev, portMAX_DELAY);
         collect_event_data(timeinfo);
 
         // 等待 collect_event_data 完成的通知
         ESP_LOGI(TAG_CALENDAR, "Waiting for data ready notification on index %d",
                  CALENDAR_NOTIFY_INDEX_DATA_READY);
         xTaskNotifyWaitIndexed(CALENDAR_NOTIFY_INDEX_DATA_READY, pdFALSE, pdTRUE, NULL,
-                               portMAX_DELAY);
-
+                               500 / portTICK_PERIOD_MS);
+        event_t ev = {
+            .event_id = SCREEN_EVENT_CALENDAR,
+        };
+        strftime(ev.msg, 11, "%Y-%m-%d", &timeinfo);
+        xQueueSend(gui_queue, &ev, portMAX_DELAY);
         // 通知預取任務當前的日期
         if (xPrefetchCalendarTaskHandle) {
             time_t current_day_for_prefetch = mktime(&timeinfo); // 獲取當前 timeinfo 的 time_t
@@ -726,5 +727,59 @@ void calendar_startup(void *pvParameters) {
         ESP_LOGI(TAG_CALENDAR, "Setting encoder callback to notify task %p on index %d",
                  xCalendarStartupHandle, CALENDAR_NOTIFY_INDEX_CMD);
         ec11_set_encoder_callback(xCalendarStartupHandle);
+    }
+}
+
+void CalenderStartupNoWifi(void *pvParameters) {
+    time_t now;
+    struct tm timeinfo;
+    uint32_t time_shift = 0;
+    // 初始化 timeinfo 避免在 sntp_get_sync_status() 返回 SNTP_SYNC_STATUS_RESET 時 localtime_r 出錯
+    memset(&timeinfo, 0, sizeof(struct tm));
+    if (check_calendar_settings() != ESP_OK) {
+        event_t ev = {
+            .event_id = SCREEN_EVENT_CENTER,
+            .msg = "No calendar settings found.",
+        };
+        xQueueSend(gui_queue, &ev, portMAX_DELAY);
+    }
+    vTaskSuspend(NULL);
+    time(&now);
+    localtime_r(&now, &timeinfo); // 獲取初始 (可能未同步的) 時間
+    for (;;) {
+        time_shift = 0;
+        // 等待命令通知 (來自EC11或網路任務的初始信號)
+        ESP_LOGI(TAG_CALENDAR, "Waiting for command notification on index %d",
+                 CALENDAR_NOTIFY_INDEX_CMD);
+        xTaskNotifyWaitIndexed(CALENDAR_NOTIFY_INDEX_CMD, /* ulIndexToWaitOn */
+                               pdTRUE,                    /* xClearCountOnEntry */
+                               pdTRUE,                    /* xClearBitsOnExit */
+                               &time_shift,               /* pulNotificationValue */
+                               portMAX_DELAY);            /* xTicksToWait */
+        switch (time_shift) {
+        case 2:
+            timeinfo.tm_mday += 1;
+            break;
+        case 1:
+            timeinfo.tm_mday -= 1;
+            break;
+        default:
+            break;
+        }
+        // 標準化 timeinfo (處理月份/年份的進位和借位)
+        mktime(&timeinfo);
+
+        ESP_LOGI(TAG_CALENDAR,
+                 "Time shift processed, value: %" PRIu32
+                 ". Current date for data collection: %04d-%02d-%02d",
+                 time_shift, timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
+        event_t ev = {
+            .event_id = SCREEN_EVENT_CALENDAR,
+        };
+        strftime(ev.msg, 11, "%Y-%m-%d", &timeinfo);
+        xQueueSend(gui_queue, &ev, portMAX_DELAY);
+        ESP_LOGI(TAG_CALENDAR, "Setting encoder callback to notify task %p on index %d",
+                 xCalendarStartupNoWifiHandle, CALENDAR_NOTIFY_INDEX_CMD);
+        ec11_set_encoder_callback(xCalendarStartupNoWifiHandle);
     }
 }

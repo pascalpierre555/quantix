@@ -47,7 +47,7 @@ void server_check(void);
 // 連線成功/失敗回呼
 void cb_connection_ok(void *pvParameter);
 void cb_button_wifi_settings(void *pvParameters);
-void cb_button_continue_without_wifi(void);
+void cb_button_continue_without_wifi(void *pvParameters);
 void cb_button_setting_done(void *pvParameters);
 
 // 伺服器連線測試
