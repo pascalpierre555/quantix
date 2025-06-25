@@ -27,47 +27,55 @@ static const char *TAG = "NET_TASK";
 QueueHandle_t net_queue;
 SemaphoreHandle_t xWifi;
 
-// 定義憑證檔案的路徑
+// Root CA certificate for the server.
 extern const char isrgrootx1_pem_start[] asm("_binary_isrgrootx1_pem_start");
 extern const char isrgrootx1_pem_end[] asm("_binary_isrgrootx1_pem_end");
 
 static char responseBuffer[512];
 
-// 定義登入 URL 和股票 API URL
+// URLs for the backend server.
 #define LOGIN_URL "https://peng-pc.tail941dce.ts.net/login"
 #define TEST_URL "https://peng-pc.tail941dce.ts.net/ping"
 #define SETTING_URL "https://peng-pc.tail941dce.ts.net/settings"
 #define CHECK_AUTH_RESULT_URL "https://peng-pc.tail941dce.ts.net/check_auth_result?username=esp32"
-// #define STOCK_URL "http://<your-server-ip>:5000/stock"
-#define MAX_BACKOFF_MS 15 * 60 * 1000 // 最大退避時間為 15 分鐘
+// Maximum backoff time is 15 minutes.
+#define MAX_BACKOFF_MS 15 * 60 * 1000
 
-// 定義task handle
+// Task handles for network-related tasks.
 TaskHandle_t xServerCheckHandle = NULL;
 TaskHandle_t xServerLoginHandle = NULL;
 TaskHandle_t xEspCheckAuthResultHandle = NULL;
 TaskHandle_t xServerCheckCallbackHandle = NULL;
 TaskHandle_t xButtonSettingDoneHandle = NULL;
-TaskHandle_t xCbContinueNoWifiHandle =
-    NULL; // Renamed for clarity: Handle for cb_button_continue_without_wifi task
+// Handle for cb_button_continue_without_wifi task
+TaskHandle_t xCbContinueNoWifiHandle = NULL;
 EventGroupHandle_t net_event_group;
 
-static int output_len = 0; // Stores number of bytes read
-
-// 定義 HTTP 事件處理函式
+/**
+ * @brief A minimal HTTP event handler.
+ *
+ * This function is registered with the HTTP client but currently performs no action.
+ * It's a placeholder for potential future use.
+ *
+ * @param evt Pointer to the HTTP client event data.
+ * @return ESP_OK always.
+ */
 esp_err_t _http_event_handler(esp_http_client_event_t *evt) { return ESP_OK; }
 
-// 定義登入事件處理函式
+/**
+ * @brief HTTP event handler for logging purposes.
+ *
+ * This handler logs various HTTP client events to the console for debugging.
+ * It does not accumulate response data, as that is handled manually in the worker task.
+ *
+ * @param evt Pointer to the HTTP client event data.
+ * @return ESP_OK always.
+ */
 esp_err_t get_response_event_handler(esp_http_client_event_t *evt) {
 
     switch (evt->event_id) {
     case HTTP_EVENT_ON_DATA:
         ESP_LOGD(TAG, "HTTP_EVENT_ON_DATA, len=%d", evt->data_len);
-        // Response data will be read manually in the net_worker_task
-        // if event.save_to_buffer is true.
-        // If you still want to use the event handler to accumulate data,
-        // evt->user_data should point to a structure that includes the buffer,
-        // its total size, and the current offset for writing.
-        // For simplicity with manual read, we don't accumulate here.
         break;
     case HTTP_EVENT_ERROR:
         ESP_LOGD(TAG, "HTTP_EVENT_ERROR");
@@ -95,20 +103,31 @@ esp_err_t get_response_event_handler(esp_http_client_event_t *evt) {
     return ESP_OK;
 }
 
+/**
+ * @brief A worker task that processes network requests from a queue.
+ *
+ * This task waits for `net_event_t` items on `net_queue`. For each event, it
+ * performs an HTTP request with retry logic and exponential backoff. It handles
+ * setting JWT headers, posting data, receiving responses, and optionally
+ * parsing the response as JSON. After the request is complete (or has failed
+ * after all retries), it calls the `on_finish` callback specified in the event.
+ *
+ * @param pvParameters Unused.
+ */
 void net_worker_task(void *pvParameters) {
     net_event_t event;
     for (;;) {
         if (xQueueReceive(net_queue, &event, portMAX_DELAY) == pdTRUE) {
             int try_count = 0;
-            const int max_retry = 5; // 寫死最大重試次數
-            int delay_ms = 1000;     // 寫死初始延遲
+            const int max_retry = 5; // Hardcoded maximum number of retries.
+            int delay_ms = 1000;     // Hardcoded initial delay.
             int failure_count = 0;
             int success_count = 0;
             const int max_backoff_ms = MAX_BACKOFF_MS;
             esp_err_t err; // Initialize err for this attempt
             while (1) {
                 xSemaphoreTake(xWifi, portMAX_DELAY);
-                // 設定 HTTP config
+                // Configure the HTTP client.
                 xEventGroupWaitBits(net_event_group, NET_WIFI_CONNECTED_BIT, false, true,
                                     portMAX_DELAY);
                 esp_http_client_config_t config = {
@@ -237,7 +256,7 @@ void net_worker_task(void *pvParameters) {
                 esp_http_client_close(client); // Close connection
                 xSemaphoreGive(xWifi);         // Release semaphore AFTER all
 
-                // 自動解析 JSON
+                // Automatically parse JSON if requested.
                 if (err == ESP_OK && event.json_parse && event.response_buffer) {
                     cJSON *parsed_json = cJSON_Parse(event.response_buffer);
                     if (!parsed_json) {
@@ -265,7 +284,7 @@ void net_worker_task(void *pvParameters) {
                 if (!should_retry)
                     break;
 
-                // 退避邏輯
+                // Backoff logic for retries.
                 if (failure_count == 1) {
                     delay_ms = 1000;
                 } else if (failure_count < 6) {
@@ -292,11 +311,19 @@ void net_worker_task(void *pvParameters) {
     }
 }
 
+/**
+ * @brief Saves a string value from a cJSON object to NVS.
+ *
+ * @param root The root cJSON object.
+ * @param nvs_name The name of the NVS namespace to open.
+ * @param key The key of the string item to find in the JSON object and use for NVS storage.
+ * @return 0 on success, 1 on failure.
+ */
 bool http_response_save_to_nvs(cJSON *root, char *nvs_name, char *key) {
     if (root && key) {
         cJSON *item = cJSON_GetObjectItem(root, key);
         if (item && cJSON_IsString(item)) {
-            // 儲存到 NVS
+            // Save to NVS.
             nvs_handle_t nvs;
             esp_err_t err = nvs_open(nvs_name, NVS_READWRITE, &nvs);
             if (err == ESP_OK) {
@@ -319,6 +346,14 @@ bool http_response_save_to_nvs(cJSON *root, char *nvs_name, char *key) {
     return 0;
 }
 
+/**
+ * @brief Task acting as a callback for a button press to enter Wi-Fi settings mode.
+ *
+ * This task waits for a notification, then disconnects the device from the current
+ * Wi-Fi station, which will trigger the wifi_manager to enter AP mode for configuration.
+ *
+ * @param pvParameters Unused.
+ */
 void cb_button_wifi_settings(void *pvParameters) {
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -330,6 +365,14 @@ void cb_button_wifi_settings(void *pvParameters) {
     }
 }
 
+/**
+ * @brief Task acting as a callback for a button press to continue without a Wi-Fi connection.
+ *
+ * This task waits for a notification (typically from a button press ISR) and then
+ * notifies the calendar display task to proceed, for example, by showing cached data.
+ *
+ * @param pvParameters Unused.
+ */
 void cb_button_continue_without_wifi(void *pvParameters) {
     for (;;) {
         // Wait for a notification, presumably from an ISR (e.g., EC11 button press)
@@ -344,7 +387,17 @@ void cb_button_continue_without_wifi(void *pvParameters) {
     }
 }
 
-// 新增 callback 處理 HTTP 結果
+/**
+ * @brief Callback to handle the result of the authentication check with the server.
+ *
+ * This function is called after the device has requested to check the result of a
+ * user authentication process (e.g., after scanning a QR code). It parses the
+ * server's response. If successful, it saves the new tokens. If pending or failed,
+ * it updates the UI accordingly.
+ *
+ * @param event The network event containing the response data.
+ * @param err The result of the HTTP request.
+ */
 static void check_auth_result_callback(net_event_t *event, esp_err_t err) {
     event_t ev = {
         .event_id = SCREEN_EVENT_CENTER,
@@ -361,7 +414,7 @@ static void check_auth_result_callback(net_event_t *event, esp_err_t err) {
             char *status = cJSON_GetStringValue(item);
             if (status) {
                 ESP_LOGI(TAG, "Status: %s", status);
-                ev.msg[26] = '\0'; // 確保string結尾
+                ev.msg[26] = '\0'; // Ensure string is null-terminated
                 strncat(ev.msg, status, MAX_MSG_LEN - strlen(ev.msg) - 1);
                 xQueueSend(gui_queue, &ev, portMAX_DELAY);
                 xSemaphoreTake(xScreen, portMAX_DELAY);
@@ -378,13 +431,21 @@ static void check_auth_result_callback(net_event_t *event, esp_err_t err) {
                 xTaskNotify(xCalendarDisplayHandle, 0, eSetValueWithOverwrite);
             }
         }
-        cJSON_Delete(event->json_root); // 用完要釋放
+        cJSON_Delete(event->json_root); // Free the parsed JSON
     } else {
         ESP_LOGE(TAG, "Failed to parse JSON or HTTP error: %s",
                  event->response_buffer ? event->response_buffer : "");
     }
 }
 
+/**
+ * @brief Task acting as a callback for a button press indicating the user has finished the settings
+ * process.
+ *
+ * This task waits for a notification, then queues a network request to check the
+ * authentication result with the server.
+ * @param pvParameters Unused.
+ */
 void cb_button_setting_done(void *pvParameters) {
     net_event_t event = {
         .url = CHECK_AUTH_RESULT_URL,
@@ -405,6 +466,18 @@ void cb_button_setting_done(void *pvParameters) {
     }
 }
 
+/**
+ * @brief Callback to handle the result of the initial server login/check.
+ *
+ * This function is called after the device attempts to log in to the server.
+ * If successful, it saves the received JWT, sets event group bits to signal
+ * that the server is connected and a token is available, and notifies other tasks
+ * to proceed with their network-dependent operations. If it fails, it updates the
+ * UI to show a connection error and sets up a button callback to retry.
+ *
+ * @param event The network event containing the response data.
+ * @param err The result of the HTTP request.
+ */
 static void server_check_callback(net_event_t *event, esp_err_t err) {
     if (err == ESP_OK && event->json_root) {
         cJSON *token_item = cJSON_GetObjectItem(event->json_root, "token");
@@ -442,7 +515,16 @@ static void server_check_callback(net_event_t *event, esp_err_t err) {
     }
 }
 
-// userSettings 的 callback
+/**
+ * @brief Callback to handle the response from the user settings request.
+ *
+ * This function is called after the device requests user settings. It expects
+ * a JSON response containing a base64-encoded QR code. It decodes the string
+ * and passes the QR code data to the UI task to be displayed.
+ *
+ * @param event The network event containing the response data.
+ * @param err The result of the HTTP request.
+ */
 static void user_settings_callback(net_event_t *event, esp_err_t err) {
     if (err == ESP_OK && event->json_root) {
         ESP_LOGI(TAG, "HTTP response: %s", event->response_buffer);
@@ -474,6 +556,14 @@ static void user_settings_callback(net_event_t *event, esp_err_t err) {
     }
 }
 
+/**
+ * @brief Callback executed when the device successfully connects to Wi-Fi and gets an IP address.
+ *
+ * It sets the `NET_WIFI_CONNECTED_BIT` in the event group, updates the UI,
+ * and triggers an initial check/login with the server.
+ *
+ * @param pvParameter A pointer to the `ip_event_got_ip_t` event data.
+ */
 void cb_connection_ok(void *pvParameter) {
     ip_event_got_ip_t *param = (ip_event_got_ip_t *)pvParameter;
 
@@ -491,9 +581,18 @@ void cb_connection_ok(void *pvParameter) {
         xQueueSend(gui_queue, &ev, portMAX_DELAY);
     }
     xSemaphoreGive(xWifi);
-    server_check(); // 檢查伺服器連線
+    server_check(); // Check server connection
 }
 
+/**
+ * @brief Callback executed when Wi-Fi credentials are required.
+ *
+ * This is triggered by the wifi_manager when it cannot connect to a known AP.
+ * It queues a message to the UI task to display the Wi-Fi setup screen (with QR code)
+ * and sets up a button callback to allow the user to proceed without Wi-Fi.
+ *
+ * @param pvParameter Unused.
+ */
 void cb_wifi_required(void *pvParameter) {
     ESP_LOGI(TAG, "WiFi required, switching to AP mode...");
     event_t ev = {
@@ -504,6 +603,12 @@ void cb_wifi_required(void *pvParameter) {
     ec11_set_button_callback(xCbContinueNoWifiHandle);
 }
 
+/**
+ * @brief Queues a request to log in to the server and obtain a JWT.
+ *
+ * This function constructs and sends a `net_event_t` to the `net_queue` for the
+ * worker task to process.
+ */
 void server_check(void) {
     net_event_t event = {
         .url = LOGIN_URL,
@@ -520,6 +625,13 @@ void server_check(void) {
     xQueueSend(net_queue, &event, portMAX_DELAY);
 }
 
+/**
+ * @brief Queues a request to fetch user-specific settings from the server.
+ *
+ * This function is typically called when the user needs to configure their account
+ * with the device. It retrieves the JWT from NVS and sends an authenticated request.
+ * If no token is found, it initiates a `server_check` to log in first.
+ */
 void userSettings(void) {
     ESP_LOGI(TAG, "Getting user setting url...");
     char *token = jwt_load_from_nvs();
@@ -534,29 +646,47 @@ void userSettings(void) {
             .response_buffer_size = sizeof(responseBuffer),
             .on_finish = user_settings_callback,
             .user_data = NULL,
-            .json_parse = 1, // 只要不是NULL就會自動parse
+            .json_parse = 1, // Request JSON parsing
         };
         xQueueSend(net_queue, &event, portMAX_DELAY);
     } else {
         ESP_LOGE(TAG, "No token found, skipping user settings fetch.");
         xEventGroupClearBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
-        server_check(); // 如果沒有 token，就直接檢查伺服器連線
+        server_check(); // If no token, try to log in to the server.
     }
 }
 
+/**
+ * @brief [INCOMPLETE/UNUSED] Task intended to download calendar data.
+ *
+ * This function initializes an HTTP client but does not perform any request.
+ * It appears to be incomplete or deprecated.
+ *
+ * @param pvParameters Unused.
+ */
 void download_calendar_data_task(void *pvParameters) {
-    esp_http_client_config_t config = {
-        .url = SETTING_URL,
-        .event_handler = get_response_event_handler,
-        .timeout_ms = 3000,
-        .cert_pem = isrgrootx1_pem_start,
-        .method = HTTP_METHOD_POST,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_header(client, "Accept-Encoding", "identity");
+    // esp_http_client_config_t config = {
+    //     .url = SETTING_URL,
+    //     .event_handler = get_response_event_handler,
+    //     .timeout_ms = 3000,
+    //     .cert_pem = isrgrootx1_pem_start,
+    //     .method = HTTP_METHOD_POST,
+    // };
+    // esp_http_client_handle_t client = esp_http_client_init(&config);
+    // esp_http_client_set_header(client, "Content-Type", "application/json");
+    // esp_http_client_set_header(client, "Accept-Encoding", "identity");
 }
 
+/**
+ * @brief Initializes the network components and starts all related tasks.
+ *
+ * This function should be called once at startup. It starts the wifi_manager,
+ * sets up callbacks for Wi-Fi events, creates the network request queue, and
+ * creates all the tasks responsible for handling network operations and related
+ * button callbacks.
+ *
+ * @param pvParameters Unused.
+ */
 void netStartup(void *pvParameters) {
     wifi_manager_start();
     wifi_manager_set_callback(WM_EVENT_STA_GOT_IP, &cb_connection_ok);
