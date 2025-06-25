@@ -38,10 +38,13 @@ The directory structure is as follows:
 └── README.md
 
 ```
-* main.c: The main application entry point, which initializes NVS, FS and global resources.
-* net_task.c: The core networking task.
+* ```main.c```: The main application entry point, which initializes NVS, FS and global resources. Also handles special logic after waking up from deep sleep.
+* ```net_task.c```: The core networking task. Manages all HTTP requests, handles JWT keys for server login, and monitors Wi-Fi and server connection status with automatic reconnection on disconnection.
+* ```calendar.c```: The main calendar logic task. Manages calendar display functionality, including the currently shown date and automatic time synchronization.
+* ```font_task.c```: The dynamic font manager. Handles font storage and caching, and is responsible for sending HTTP requests via net_task to download missing fonts.
+* ```ui_task.c```: The UI display task. Manages e-paper display updates and GUI definitions.
 
-🔄 Workflow
+## 🔄 Workflow
 1. First Boot: The device detects no Wi-Fi configuration and enters AP mode. The UI displays a prompt and a QR code. The user scans the code to connect to the device's AP and configures the home Wi-Fi SSID and password in a web portal.
 2. Connection Success: The device connects to the Wi-Fi and registers with the backend server, obtaining a JWT for subsequent API authentication.
 3. User Binding: The device retrieves a unique QR code from the server and displays it. The user scans this code with a mobile app (or other means) to bind the device to their user account.
