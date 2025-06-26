@@ -16,6 +16,9 @@ Quantix is an ESP32-based e-paper calendar application that integrates with Goog
 * 2.9-inch SPI E-Paper Display (e.g., Waveshare e-Paper E-Ink Display Module V2)
 * EC11 Rotary Encoder (with push-button)
 
+### Wiring Diagram
+![ESP32 wiring diagram](quantix/images/wiring-diagram.png)
+
 ## 💾 Software Architecture
 This project consists of an ESP32-based client and a Flask-based server.
 The directory structure is as follows:
