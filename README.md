@@ -1,7 +1,7 @@
 # Quantix
 Quantix is an ESP32-based e-paper calendar application that integrates with Google Calendar and supports multilingual character rendering. It is designed to be a stylish and power-efficient desktop display or personal information board.
 
-## Features
+## ✨ Features
 - **Dynamic Font System**  
   Automatically detects missing Chinese characters in the display text and downloads the corresponding bitmap data from a server in real-time. The data is then cached locally using LittleFS for future use.
 
@@ -16,7 +16,7 @@ Quantix is an ESP32-based e-paper calendar application that integrates with Goog
 * 2.9-inch SPI E-Paper Display (e.g., Waveshare e-Paper E-Ink Display Module V2)
 * EC11 Rotary Encoder (with push-button)
 
-## Software Architecture
+## 💾 Software Architecture
 This project consists of an ESP32-based client and a Flask-based server.
 The directory structure is as follows:
 
@@ -88,14 +88,15 @@ your server will also be reachable via a public .ts.net URL.
 8. Offline Operation: Upon waking, the program immediately reads cached data from LittleFS to display the previous or next day's calendar. This provides a responsive experience without waiting for a network connection.
 9. Resynchronization: While displaying the new date, a new round of data prefetching is triggered. The device then prepares to enter sleep again, completing a full low-power work cycle.
    
-## Acknowledgements
+## 🔊 Acknowledgements
 
 This project is built upon the following open-source libraries and components. A special thanks to their developers and contributors:
 
-*   [**ESP-IDF**](https://github.com/espressif/esp-idf): The official IoT Development Framework by Espressif, providing the underlying drivers and system services for this project.
-*   [**FreeRTOS**](https://www.freertos.org/): Included as part of ESP-IDF, it provides the core multitasking and synchronization mechanisms.
-*   [**cJSON**](https://github.com/DaveGamble/cJSON): A lightweight and fast JSON parser for C, used for handling all API data exchange with the backend server.
-*   [**esp-littlefs**](https://github.com/joltwallet/esp_littlefs): An ESP-IDF component for the LittleFS file system, enabling reliable local data caching (calendar events, fonts) in this project.
-*   [**esp32-wifi-manager**](https://github.com/tonyp7/esp32-wifi-manager): A powerful Wi-Fi connection management component that simplifies the initial device provisioning process.
-*   [**Waveshare E-Paper Driver**](https://www.waveshare.com/wiki/2.9inch_e-Paper_Module_Manual): The drivers and graphics libraries related to `EPD_2in9` and `GUI_Paint` are based on the official example code provided by Waveshare.
-
+*   [**ESP-IDF**](https://github.com/espressif/esp-idf): The official IoT Development Framework by Espressif, providing the underlying drivers and system services for this project.  
+*   [**FreeRTOS**](https://www.freertos.org/): Included as part of ESP-IDF, it provides the core multitasking and synchronization mechanisms.  
+*   [**cJSON**](https://github.com/DaveGamble/cJSON): A lightweight and fast JSON parser for C, used for handling all API data exchange with the backend server.  
+*   [**esp-littlefs**](https://github.com/joltwallet/esp_littlefs): An ESP-IDF component for the LittleFS file system, enabling reliable local data caching (calendar events, fonts) in this project.  
+*   [**esp32-wifi-manager**](https://github.com/tonyp7/esp32-wifi-manager): A powerful Wi-Fi connection management component that simplifies the initial device provisioning process.  
+*   [**Waveshare E-Paper Driver**](https://www.waveshare.com/wiki/2.9inch_e-Paper_Module_Manual): The drivers and graphics libraries related to `EPD_2in9` and `GUI_Paint` are based on the official example code provided by Waveshare.  
+*   [**Tamzen Font**](https://github.com/sunaku/tamzen-font): A minimal bitmap font optimized for readability and compact size, used for English and Latin characters on the display.  
+*   [**Unifont-JP**](https://unifoundry.com/unifont/index.html): A comprehensive bitmap font that supports a wide range of Japanese and Chinese characters, used as a fallback or supplemental font for multilingual text rendering.
