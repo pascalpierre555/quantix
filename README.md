@@ -44,6 +44,39 @@ The directory structure is as follows:
 * ```font_task.c```: The dynamic font manager. Handles font storage and caching, and is responsible for sending HTTP requests via net_task to download missing fonts.
 * ```ui_task.c```: The UI display task. Manages e-paper display updates and GUI definitions.
 
+## 🧪 How to Set Up a Temporary Flask Server
+
+To quickly launch a test Flask server and make it accessible via the internet, follow the steps below.
+
+### 1. Install Tailscale
+
+Follow the [official guide](https://tailscale.com/download):
+
+### 2. Enable Tailscale Funnel
+Follow the [official guide](https://tailscale.com/kb/1223/funnel):
+This allows public HTTP access to your local Flask server via your *.ts.net domain.
+
+### 3. Install require python packages
+Ensure [Python](https://www.python.org/downloads/) and pip are installed, then use pip to install requirements:
+```
+pip install Flask PyJWT python-dotenv requests Pillow qrcode numpy
+```
+
+### 4. Run Flask server and expose
+Navigate to ```quantix-server/``` and run
+```
+flask run
+```
+This will start the development server at:
+```
+http://127.0.0.1:5000
+```
+If Tailscale Funnel is enabled, run:
+```
+tailscale funnel 5000
+```
+your server will also be reachable via a public .ts.net URL.
+
 ## 🔄 Workflow
 1. First Boot: The device detects no Wi-Fi configuration and enters AP mode. The UI displays a prompt and a QR code. The user scans the code to connect to the device's AP and configures the home Wi-Fi SSID and password in a web portal.
 2. Connection Success: The device connects to the Wi-Fi and registers with the backend server, obtaining a JWT for subsequent API authentication.
