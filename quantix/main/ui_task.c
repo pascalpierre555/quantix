@@ -15,46 +15,79 @@
 #include <stdlib.h>
 #include <string.h>
 
-// 定義螢幕用的binary semaphore
+/** @brief Semaphore to protect access to the E-Paper display. */
 SemaphoreHandle_t xScreen = NULL;
 
-// 定義螢幕快取
+/** @brief Frame buffer for the E-Paper display. */
 UBYTE *BlackImage;
 
-// 定義task handle
+/** @brief Task handle for the main UI display task (viewDisplay). */
 TaskHandle_t xViewDisplayHandle = NULL;
 
-// 定義螢幕事件
+/** @brief Queue for receiving UI update events from other tasks. */
 QueueHandle_t gui_queue;
 
+/** @brief Log tag for this module. */
 static const char *TAG = "UI_TASK";
 
+/** @brief Static buffer to store the QR code data for user settings. */
 static char setting_qrcode[256];
 
-// UI Layout Constants for Calendar View
+/** @brief X coordinate for the day number in the calendar view. */
 #define CALENDAR_DAY_X 10
+/** @brief Y coordinate for the day number in the calendar view. */
 #define CALENDAR_DAY_Y 10
+/** @brief X coordinate for the month abbreviation in the calendar view. */
 #define CALENDAR_MONTH_X 10
+/** @brief Y coordinate for the month abbreviation in the calendar view. */
 #define CALENDAR_MONTH_Y (CALENDAR_DAY_Y + 36) // Font24 height + spacing
 
+/** @brief X coordinate for the start of the event list in the calendar view. */
 #define CALENDAR_EVENT_LIST_X (CALENDAR_DAY_X + 36 + 10)
+/** @brief Y coordinate for the start of the event list in the calendar view. */
 #define CALENDAR_EVENT_LIST_Y (CALENDAR_DAY_Y - 5)
+/** @brief Width of the event list area in the calendar view. */
 #define CALENDAR_EVENT_LIST_WIDTH (EPD_2IN9_V2_HEIGHT - CALENDAR_EVENT_LIST_X - 5)
+/** @brief Height of the event list area in the calendar view. */
 #define CALENDAR_EVENT_LIST_HEIGHT (EPD_2IN9_V2_WIDTH - 5) // 5px bottom padding
+/** @brief Vertical spacing between lines in the event list. */
 #define CALENDAR_EVENT_LINE_SPACING 5
 
+/** @brief Font used for displaying event summaries in the calendar view. */
 static sFONT *calendar_event_font = &Font16; // Font for event summaries
 
+/**
+ * @brief Sets the QR code data to be displayed.
+ *
+ * This function copies the provided QR code string into a static buffer.
+ * The QR code is later used by the UI task to render it on the screen.
+ *
+ * @param qrcode A pointer to the null-terminated string containing the QR code data.
+ */
 void setting_qrcode_setting(char *qrcode) {
     if (qrcode != NULL && strlen(qrcode) < sizeof(setting_qrcode)) {
         memcpy(setting_qrcode, qrcode, sizeof(setting_qrcode) - 1);
-        setting_qrcode[sizeof(setting_qrcode) - 1] = '\0'; // 確保string結尾
+        setting_qrcode[sizeof(setting_qrcode) - 1] =
+            '\0'; // Ensure the string is null-terminated
     } else {
         ESP_LOGE(TAG, "Invalid QR code string");
     }
 }
 
-// Helper function to format "YYYY-MM-DD" from event.msg to displayable day and month
+/**
+ * @brief Formats a "YYYY-MM-DD" date string into a displayable day and month abbreviation.
+ *
+ * This is a helper function that takes a date string and populates two output buffers:
+ * one with the two-digit day (e.g., "05") and another with the three-letter month
+ * abbreviation (e.g., "Jan"). It handles invalid or "NoDate" inputs gracefully by
+ * providing placeholder strings.
+ *
+ * @param yyyymmdd_str    Input date string in "YYYY-MM-DD" format.
+ * @param out_day_str     Output buffer for the day string (e.g., "DD").
+ * @param day_str_size    Size of the `out_day_str` buffer.
+ * @param out_month_abbr  Output buffer for the month abbreviation (e.g., "Mon").
+ * @param month_abbr_size Size of the `out_month_abbr` buffer.
+ */
 static void format_date_for_display(const char *yyyymmdd_str, char *out_day_str,
                                     size_t day_str_size, char *out_month_abbr,
                                     size_t month_abbr_size) {
@@ -81,6 +114,18 @@ static void format_date_for_display(const char *yyyymmdd_str, char *out_day_str,
     out_month_abbr[month_abbr_size - 1] = '\0';
 }
 
+/**
+ * @brief The main UI task responsible for updating the E-Paper display.
+ *
+ * This task runs in an infinite loop, waiting for events on the `gui_queue`.
+ * When an event is received, it takes the `xScreen` semaphore and updates the
+ * display according to the event ID. It handles rendering different screens
+ * such as Wi-Fi setup, connection status, calendar view, and QR codes.
+ * It also includes logic to prevent unnecessary redraws if the view or data
+ * has not changed.
+ *
+ * @param PvParameters Unused.
+ */
 void viewDisplay(void *PvParameters) {
     event_t event;
     uint32_t view_current = 0;
@@ -154,7 +199,7 @@ void viewDisplay(void *PvParameters) {
                 break;
             case SCREEN_EVENT_CLEAR:
                 if (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE) {
-                    displayStr[0] = '\0'; // 清空顯示string
+                    displayStr[0] = '\0'; // Clear the display string cache
                     EPD_2IN9_V2_Init();
                     EPD_2IN9_V2_Clear();
                     Paint_SelectImage(BlackImage);
@@ -167,17 +212,19 @@ void viewDisplay(void *PvParameters) {
                 }
                 break;
             case SCREEN_EVENT_CALENDAR:
-                // 如果當前已經是日曆視圖，並且請求的日期與當前顯示的日期相同，則跳過重繪
+                // If the view is already the calendar and the requested date is the same as the
+                // one currently displayed, skip the redraw to prevent flickering.
                 if (view_current == SCREEN_EVENT_CALENDAR && strcmp(displayStr, event.msg) == 0) {
                     ESP_LOGI(TAG, "Calendar date %s same as current, skipping full redraw.",
                              event.msg);
-                    break; // 日期未變，跳出此case，不執行重繪
+                    break; // Date hasn't changed, so no need to redraw.
                 }
 
-                // 執行到這裡，表示需要重繪（視圖改變或日期改變）
+                // A redraw is needed because the view or the date has changed.
                 if (xSemaphoreTake(xScreen, portMAX_DELAY) == pdTRUE) {
-                    // 更新 displayStr 為新的日期，因為我們要繪製它
-                    strncpy(displayStr, event.msg, sizeof(displayStr) - 1); // Cache the date string
+                    // Cache the new date string. This is used to check for changes on subsequent
+                    // events.
+                    strncpy(displayStr, event.msg, sizeof(displayStr) - 1);
                     displayStr[sizeof(displayStr) - 1] = '\0';
 
                     char disp_day[3];
@@ -189,14 +236,14 @@ void viewDisplay(void *PvParameters) {
                     Paint_SelectImage(BlackImage);
                     Paint_Clear(WHITE);
 
-                    // 1. Display Date
+                    // 1. Draw the date part of the UI (day and month).
                     Paint_DrawString_EN(CALENDAR_DAY_X, CALENDAR_DAY_Y, disp_day, &Font36, WHITE,
                                         BLACK);
                     Paint_DrawString_EN(CALENDAR_MONTH_X, CALENDAR_MONTH_Y, disp_month, &Font16,
                                         BLACK, WHITE);
                     Paint_DrawRectangle(5, 5, 51, 69, BLACK, 1, DRAW_FILL_EMPTY);
 
-                    // 2. Display Events from LittleFS
+                    // 2. Load and draw events for the selected date from LittleFS.
                     if (strcmp(displayStr, "NoDate") != 0 && strlen(displayStr) == 10) {
                         char file_path[64];
                         int calendar_dir_len = strlen(CALENDAR_DIR);
@@ -354,8 +401,20 @@ void viewDisplay(void *PvParameters) {
     }
 }
 
+/**
+ * @brief Initializes the E-Paper display and starts the UI task.
+ *
+ * This function should be called once at startup. It initializes the display hardware,
+ * allocates memory for the frame buffer, and creates the `viewDisplay` task
+ * which handles all subsequent screen updates. It handles both initial boot
+ * and wakeup from deep sleep scenarios. After setup is complete, it gives the
+ * `xScreen` semaphore and deletes itself.
+ *
+ * @param pvParameters Unused.
+ */
 void screenStartup(void *pvParameters) {
     if (DEV_Module_Init() != 0) {
+        // TODO: Handle display initialization error.
     }
     printf("e-Paper Init and Clear...\r\n");
 

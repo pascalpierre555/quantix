@@ -246,6 +246,17 @@ int find_missing_characters(const char *str, char *missing, int missing_buffer_s
     return missing_chars_count;
 }
 
+/**
+ * @brief Callback function executed after a font download request is complete.
+ *
+ * This function is called by the `net_worker_task`. It processes the JSON response
+ * from the font server, which should contain an array of font data. For each font,
+ * it saves the bitmap data to a file on LittleFS and, if space is available,
+ * loads it into the RAM cache.
+ *
+ * @param event The network event structure containing the response data.
+ * @param result The result of the HTTP request (ESP_OK on success).
+ */
 // 字型下載完成後的回調函數
 static void font_download_callback(net_event_t *event, esp_err_t result) {
     if (result == ESP_OK && event->json_root) {
