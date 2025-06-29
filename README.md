@@ -1,7 +1,7 @@
 # Quantix
 Quantix is an ESP32-based e-paper calendar application that integrates with Google Calendar and supports multilingual character rendering. It is designed to be a stylish and power-efficient desktop display or personal information board.
 
-## ✨ Features
+## Features
 - **Dynamic Font System**  
   Automatically detects missing Chinese characters in the display text and downloads the corresponding bitmap data from a server in real-time. The data is then cached locally using LittleFS for future use.
 
@@ -11,7 +11,7 @@ Quantix is an ESP32-based e-paper calendar application that integrates with Goog
 - **Effortless Setup**  
   First-time users can easily configure Wi-Fi and link their Google account by simply scanning a QR code with their phone, streamlining the setup process for a smooth and intuitive experience.
 
-## 🛠️ Hardware Requirements
+## Hardware Requirements
 * ESP32 development board
 * 2.9-inch SPI E-Paper Display (e.g., Waveshare e-Paper E-Ink Display Module V2)
 * EC11 Rotary Encoder (with push-button)
@@ -19,7 +19,7 @@ Quantix is an ESP32-based e-paper calendar application that integrates with Goog
 ### Wiring Diagram
 ![ESP32 wiring diagram](quantix/images/wiring-diagram.png)
 
-## 💾 Software Architecture
+## Software Architecture
 This project consists of an ESP32-based client and a Flask-based server.
 The directory structure is as follows:
 
@@ -47,7 +47,7 @@ The directory structure is as follows:
 * ```font_task.c```: The dynamic font manager. Handles font storage and caching, and is responsible for sending HTTP requests via net_task to download missing fonts.
 * ```ui_task.c```: The UI display task. Manages e-paper display updates and GUI definitions.
 
-## 🧪 How to Set Up a Temporary Flask Server
+## How to Set Up a Temporary Flask Server
 
 To quickly launch a test Flask server and make it accessible via the internet, follow the steps below.
 
@@ -80,7 +80,7 @@ tailscale funnel 5000
 ```
 your server will also be reachable via a public .ts.net URL.
 
-## 🔄 Workflow
+## Workflow
 1. First Boot: The device detects no Wi-Fi configuration and enters AP mode. The UI displays a prompt and a QR code. The user scans the code to connect to the device's AP and configures the home Wi-Fi SSID and password in a web portal.
 2. Connection Success: The device connects to the Wi-Fi and registers with the backend server, obtaining a JWT for subsequent API authentication.
 3. User Binding: The device retrieves a unique QR code from the server and displays it. The user scans this code with a mobile app (or other means) to bind the device to their user account.
@@ -91,7 +91,7 @@ your server will also be reachable via a public .ts.net URL.
 8. Offline Operation: Upon waking, the program immediately reads cached data from LittleFS to display the previous or next day's calendar. This provides a responsive experience without waiting for a network connection.
 9. Resynchronization: While displaying the new date, a new round of data prefetching is triggered. The device then prepares to enter sleep again, completing a full low-power work cycle.
    
-## 🔊 Acknowledgements
+## Acknowledgements
 
 This project is built upon the following open-source libraries and components. A special thanks to their developers and contributors:
 
