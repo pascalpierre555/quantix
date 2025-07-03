@@ -19,23 +19,19 @@ void wakeup_handler(void) {
         xTaskCreate(calendar_display, "calendar_display", 4096, NULL, 6, &xCalendarDisplayHandle);
         ec11Startup();
         font_table_init();
+        ec11_set_encoder_callback(xCalendarDisplayHandle);
         xEventGroupSetBits(net_event_group, NET_CALENDAR_AVAILABLE_BIT);
         if (wakeup_pin_mask & (1ULL << PIN_BUTTON)) {
             ESP_LOGI(TAG, "Wakeup caused by PIN_BUTTON (GPIO %d)", PIN_BUTTON);
         }
         if (wakeup_pin_mask & (1ULL << PIN_ENCODER_A)) {
             ESP_LOGI(TAG, "Wakeup caused by PIN_ENCODER_A (GPIO %d)", PIN_ENCODER_A);
-            if (ec11_handler.encoder_callback)
-                xTaskNotify(ec11_handler.encoder_callback, 1, eSetValueWithOverwrite);
-            ec11_set_encoder_callback(xCalendarDisplayHandle);
+            xTaskNotify(xCalendarDisplayHandle, 2, eSetValueWithOverwrite);
         }
         if (wakeup_pin_mask & (1ULL << PIN_ENCODER_B)) {
             ESP_LOGI(TAG, "Wakeup caused by PIN_ENCODER_B (GPIO %d)", PIN_ENCODER_B);
-            if (ec11_handler.encoder_callback)
-                xTaskNotify(ec11_handler.encoder_callback, 2, eSetValueWithOverwrite);
-            ec11_set_encoder_callback(xCalendarDisplayHandle);
+            xTaskNotify(xCalendarDisplayHandle, 1, eSetValueWithOverwrite);
         }
-        // 在此處可以根據喚醒的腳位執行特定操作
         break;
     }
     case ESP_SLEEP_WAKEUP_TIMER:

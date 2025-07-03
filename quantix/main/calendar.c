@@ -243,6 +243,27 @@ esp_err_t save_event_for_date(const char *date_yyyymmdd, const cJSON *event_json
     return ESP_OK;
 }
 
+static void check_calendar_settings_callback(net_event_t *event, esp_err_t err) {
+    if (err == ESP_OK && event->json_root) {
+        char *error_message = NULL;
+        cJSON *item = cJSON_GetObjectItem(event->json_root, "error");
+        error_message = cJSON_GetStringValue(item);
+        if (error_message) {
+            ESP_LOGE(TAG_CALENDAR, "Google token check failed");
+            if (strncmp(error_message, "Google", 6) == 0) {
+                userSettings();
+            }
+        } else {
+            ESP_LOGI(TAG_CALENDAR, "Google token found");
+            xEventGroupSetBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT);
+        }
+        cJSON_Delete(event->json_root);
+    } else {
+        ESP_LOGE(TAG_CALENDAR, "Failed to parse JSON or HTTP error: %s",
+                 event->response_buffer ? event->response_buffer : "");
+    }
+}
+
 /**
  * @brief Checks if essential calendar settings (e.g., email) exist in NVS.
  *
@@ -250,19 +271,31 @@ esp_err_t save_event_for_date(const char *date_yyyymmdd, const cJSON *event_json
  *
  * @return ESP_OK if the "email" key is found, or an esp_err_t code on failure or if not found.
  */
-esp_err_t check_calendar_settings(void) {
+void check_calendar_settings(void) {
     nvs_handle_t nvs;
     esp_err_t err = nvs_open("calendar", NVS_READONLY, &nvs);
     if (err != ESP_OK)
-        return err;
+        userSettings();
 
     size_t buf_size;
     err = nvs_get_str(nvs, "email", NULL, &buf_size);
     if (err != ESP_OK) {
         nvs_close(nvs);
-        return err;
+        userSettings();
     }
-    return ESP_OK;
+
+    calendar_api_response_buffer[0] = '\0';
+    net_event_t event = {
+        .url = "https://peng-pc.tail941dce.ts.net/google_token_check",
+        .method = HTTP_METHOD_POST,
+        .use_jwt = true,
+        .response_buffer = calendar_api_response_buffer,
+        .response_buffer_size = sizeof(calendar_api_response_buffer),
+        .on_finish = check_calendar_settings_callback,
+        .user_data = NULL,
+    };
+    xQueueSend(net_queue, &event, portMAX_DELAY);
+    nvs_close(nvs);
 }
 
 /**
@@ -311,7 +344,8 @@ void collect_event_data_callback(net_event_t *event, esp_err_t result) {
 
             cJSON *event_scanner_json = NULL;
 
-            // Before saving new events, delete the old file for this date to ensure a clean slate.
+            // Before saving new events, delete the old file for this date to ensure a clean
+            // slate.
             char file_to_delete_path[64];
             snprintf(file_to_delete_path, sizeof(file_to_delete_path), "%s/%s.json", CALENDAR_DIR,
                      date);
@@ -567,10 +601,10 @@ void deep_sleep_manager_task(void *pvParameters) {
  *
  * This helper function determines whether to initiate a network request for a specific date.
  * It checks a local cache (`prefetch_cache`) to see if the date has been fetched recently.
- * - If the date is in the cache and was fetched within the `PREFETCH_COOLDOWN_SECONDS` period, it
- * returns `false`.
- * - If the date is in the cache but the cooldown has expired, it updates the timestamp and returns
- * `true`.
+ * - If the date is in the cache and was fetched within the `PREFETCH_COOLDOWN_SECONDS` period,
+ * it returns `false`.
+ * - If the date is in the cache but the cooldown has expired, it updates the timestamp and
+ * returns `true`.
  * - If the date is not in the cache, it adds it to the cache (using a circular replacement
  *   strategy if full) and returns `true`.
  *
@@ -632,7 +666,6 @@ static bool should_prefetch_date(struct tm target_date_ts) {
     return true;
 }
 
-
 void calendar_prefetch_task(void *pvParameters) {
     // 等待 WiFi 連接
     xEventGroupWaitBits(net_event_group, NET_WIFI_CONNECTED_BIT, false, true, portMAX_DELAY);
@@ -643,7 +676,8 @@ void calendar_prefetch_task(void *pvParameters) {
     // 等待NTP同步完成
     ESP_LOGI(TAG_CALENDAR, "Waiting for NTP time synchronization...");
     time_t now;
-    // 初始化 timeinfo 避免在 sntp_get_sync_status() 返回 SNTP_SYNC_STATUS_RESET 時 localtime_r 出錯
+    // 初始化 timeinfo 避免在 sntp_get_sync_status() 返回 SNTP_SYNC_STATUS_RESET 時 localtime_r
+    // 出錯
     memset(&current_display_time, 0, sizeof(struct tm));
 
     while (sntp_get_sync_status() == SNTP_SYNC_STATUS_RESET ||
@@ -656,19 +690,8 @@ void calendar_prefetch_task(void *pvParameters) {
                  current_display_time.tm_mday, current_display_time.tm_hour,
                  current_display_time.tm_min, current_display_time.tm_sec);
     }
+    check_calendar_settings();
     xEventGroupWaitBits(net_event_group, NET_SERVER_CONNECTED_BIT, false, true, portMAX_DELAY);
-    if (check_calendar_settings() != ESP_OK) {
-        xEventGroupClearBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT);
-        event_t ev = {
-            .event_id = SCREEN_EVENT_CENTER,
-            .msg = "No calendar settings found. Generating QR code for calendar setup...",
-        };
-        xQueueSend(gui_queue, &ev, portMAX_DELAY);
-        userSettings();
-        ESP_LOGE(TAG_CALENDAR, "Failed to read calendar settings");
-    } else {
-        xEventGroupSetBits(net_event_group, NET_GOOGLE_TOKEN_AVAILABLE_BIT);
-    }
     xPrefetchCacheMutex = xSemaphoreCreateMutex();
     memset(prefetch_cache, 0, sizeof(prefetch_cache)); // 初始化快取
     if (xPrefetchCacheMutex == NULL) {                 // 確保互斥鎖已創建
@@ -820,7 +843,6 @@ void calendar_display(void *pvParameters) {
         xEventGroupClearBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
         xEventGroupWaitBits(net_event_group, NET_CALENDAR_AVAILABLE_BIT, pdFALSE, pdTRUE,
                             portMAX_DELAY);
-        ESP_LOGI(TAG_CALENDAR, "Hi");
         switch (time_shift) {
         case 2:
             current_display_time.tm_mday += 1;

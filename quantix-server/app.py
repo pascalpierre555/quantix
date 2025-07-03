@@ -150,21 +150,24 @@ def ensure_valid_google_token(f):
                         "refresh_token": refresh_token,
                         "grant_type": "refresh_token"
                     },
-                    timeout=10 
+                    timeout=10
                 )
 
                 if response.status_code == 200:
                     token_data = response.json()
                     google_info['access_token'] = token_data['access_token']
-                    google_info['expires_at'] = time.time() + token_data.get("expires_in", 3600)
+                    google_info['expires_at'] = time.time(
+                    ) + token_data.get("expires_in", 3600)
                     save_authorized_users()
                     print(f"Token refreshed for {username}")
                 else:
                     error_detail = response.json().get('error_description', response.text)
-                    print(f"Failed to refresh token for {username}, status: {response.status_code}, detail: {error_detail}")
+                    print(
+                        f"Failed to refresh token for {username}, status: {response.status_code}, detail: {error_detail}")
                     return jsonify({'error': 'Google token refresh failed', 'detail': error_detail}), 401
             except requests.exceptions.RequestException as e:
-                print(f"Network error while refreshing token for {username}: {e}")
+                print(
+                    f"Network error while refreshing token for {username}: {e}")
                 return jsonify({'error': 'Network error during token refresh'}), 500
 
         return f(*args, **kwargs)
@@ -307,6 +310,13 @@ def generate_font_char_data_dict(text_to_convert: str, font_size: int):
 
 @app.route("/ping")
 def ping():
+    return jsonify({"status": "OK"})
+
+
+@app.route("/google_token_check", methods=['POST'])
+@token_required
+@ensure_valid_google_token
+def google_token_check():
     return jsonify({"status": "OK"})
 
 
@@ -503,7 +513,6 @@ def get_calendar_events():
         })
     print(f"Found {len(result)} events for {date_str} in {username}'s calendar")
     return jsonify({"events": result})
-
 
 
 @app.route("/font")

@@ -213,6 +213,11 @@ void server_check(void) {
  */
 
 void userSettings(void) {
+    event_t ev = {
+        .event_id = SCREEN_EVENT_CENTER,
+        .msg = "No calendar settings found. Generating QR code for calendar setup...",
+    };
+    xQueueSend(gui_queue, &ev, portMAX_DELAY);
     ESP_LOGI(TAG, "Getting user setting url...");
     net_event_t event = {
         .url = SETTING_URL,
@@ -397,26 +402,6 @@ void net_worker_task(void *pvParameters) {
                                  event.response_buffer);
                     }
                     event.json_root = parsed_json; // Store parsed result (or NULL if failed)
-                    if (http_status_code >= 400) {
-                        const char *error_message = NULL;
-                        if (parsed_json) {
-                            cJSON *item = cJSON_GetObjectItem(parsed_json, "error");
-                            error_message = cJSON_GetStringValue(item);
-                        }
-
-                        err = ESP_FAIL; // Treat HTTP errors as failures for retry logic.
-
-                        if (error_message) {
-                            ESP_LOGE(TAG, "HTTP Error %d for URL %s: %s", http_status_code,
-                                     event.url, error_message);
-                            if (strncmp(error_message, "JWT", 3) == 0) {
-                                server_check();
-                            } else if (strncmp(error_message, "Google", 6) == 0) {
-                                userSettings();
-                            }
-                            try_count = max_retry; // Force exit from the retry loop.
-                        }
-                    }
                 } else if (event.json_root !=
                            NULL) { // If parsing was requested but HTTP failed or no buffer
 
