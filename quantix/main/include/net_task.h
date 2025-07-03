@@ -28,12 +28,10 @@ typedef struct net_event_t {
     esp_http_client_method_t method; // HTTP 方法
     const char *post_data;           // POST 資料（可為 NULL）
     bool use_jwt;                    // 是否帶 JWT token
-    bool save_to_buffer;             // 是否將回應寫入 buffer
     char *response_buffer;           // 回應 buffer（由呼叫者分配）
     size_t response_buffer_size;     // buffer 大小
     void (*on_finish)(struct net_event_t *event, esp_err_t result); // 完成 callback
     void *user_data;
-    bool json_parse;  // 使用者自訂資料
     cJSON *json_root; // 若不為 NULL，則自動 parse JSON 並存於此
 } net_event_t;
 

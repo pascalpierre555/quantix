@@ -12,23 +12,8 @@ static const char *TAG = "Input";
 /** @brief Task handle for the encoder processing task. */
 static TaskHandle_t xEncoderTaskHandle;
 
-/**
- * @brief Structure to hold the state and configuration for the EC11 driver.
- */
-typedef struct {
-    volatile uint64_t last_button_time;      /**< Timestamp of the last valid button press. */
-    volatile uint64_t last_encoder_time_a;   /**< Timestamp of the last edge on pin A. */
-    volatile uint64_t last_encoder_time_b;   /**< Timestamp of the last edge on pin B. */
-    volatile uint64_t sec_last_encoder_time_a; /**< Timestamp of the second-to-last edge on pin A. */
-    volatile uint64_t sec_last_encoder_time_b; /**< Timestamp of the second-to-last edge on pin B. */
-    volatile uint8_t last_encoder_state_a;   /**< Last read level of pin A. */
-    volatile uint8_t last_encoder_state_b;   /**< Last read level of pin B. */
-    TaskHandle_t button_callback;            /**< Task to notify on button press. */
-    TaskHandle_t encoder_callback;           /**< Task to notify on encoder rotation. */
-} ec11_handler_t;
-
-/** @brief Static instance of the EC11 handler state. */
-static ec11_handler_t ec11_handler;
+/** @brief Global instance of the EC11 handler state, stored in RTC memory. */
+RTC_DATA_ATTR ec11_handler_t ec11_handler;
 
 /**
  * @brief Initializes the EC11 handler structure to default values.
@@ -143,12 +128,10 @@ void ec11_task(void *pvParameters) {
 
             // Compare timestamps of the previous edges to determine direction.
             if (ec11_handler.sec_last_encoder_time_a > ec11_handler.sec_last_encoder_time_b) {
-                ESP_LOGD(TAG, "Encoder: CCW");
                 if (ec11_handler.encoder_callback)
                     xTaskNotify(ec11_handler.encoder_callback, 1, eSetValueWithOverwrite);
             } else if (ec11_handler.sec_last_encoder_time_b >
                        ec11_handler.sec_last_encoder_time_a) {
-                ESP_LOGD(TAG, "Encoder: CW");
                 if (ec11_handler.encoder_callback)
                     xTaskNotify(ec11_handler.encoder_callback, 2, eSetValueWithOverwrite);
             }
@@ -176,7 +159,9 @@ void ec11Startup(void) {
                             .pin_bit_mask = (1ULL << PIN_ENCODER_A) | (1ULL << PIN_ENCODER_B)};
     gpio_config(&b_conf);
 
-    ec11_init(&ec11_handler);
+    if (!isr_woken) {
+        ec11_init(&ec11_handler);
+    }
     gpio_install_isr_service(0);
     gpio_isr_handler_add(PIN_BUTTON, button_isr, NULL);
     gpio_isr_handler_add(PIN_ENCODER_A, encoder_isr_a, NULL);

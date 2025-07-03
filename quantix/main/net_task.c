@@ -23,7 +23,7 @@
 
 static const char *TAG = "NET_TASK";
 
-#define NET_QUEUE_SIZE 8
+#define NET_QUEUE_SIZE 13
 QueueHandle_t net_queue;
 SemaphoreHandle_t xWifi;
 
@@ -50,17 +50,6 @@ TaskHandle_t xButtonSettingDoneHandle = NULL;
 // Handle for cb_button_continue_without_wifi task
 TaskHandle_t xCbContinueNoWifiHandle = NULL;
 EventGroupHandle_t net_event_group;
-
-/**
- * @brief A minimal HTTP event handler.
- *
- * This function is registered with the HTTP client but currently performs no action.
- * It's a placeholder for potential future use.
- *
- * @param evt Pointer to the HTTP client event data.
- * @return ESP_OK always.
- */
-esp_err_t _http_event_handler(esp_http_client_event_t *evt) { return ESP_OK; }
 
 /**
  * @brief HTTP event handler for logging purposes.
@@ -104,6 +93,142 @@ esp_err_t get_response_event_handler(esp_http_client_event_t *evt) {
 }
 
 /**
+ * @brief Callback to handle the result of the initial server login/check.
+ *
+ * This function is called after the device attempts to log in to the server.
+ * If successful, it saves the received JWT, sets event group bits to signal
+ * that the server is connected and a token is available, and notifies other tasks
+ * to proceed with their network-dependent operations. If it fails, it updates the
+ * UI to show a connection error and sets up a button callback to retry.
+ *
+ * @param event The network event containing the response data.
+ * @param err The result of the HTTP request.
+ */
+static void server_check_callback(net_event_t *event, esp_err_t err) {
+    if (err == ESP_OK && event->json_root) {
+        cJSON *token_item = cJSON_GetObjectItem(event->json_root, "token");
+        if (token_item && cJSON_IsString(token_item)) {
+            const char *jwt = token_item->valuestring;
+            jwt_save_to_nvs(jwt);
+            ESP_LOGI(TAG, "Login success, token saved.");
+            xEventGroupSetBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
+            xEventGroupSetBits(net_event_group, NET_SERVER_CONNECTED_BIT);
+            if (!isr_woken) {
+                event_t ev = {
+                    .event_id = SCREEN_EVENT_CENTER,
+                    .msg = "Server connected successfully:)",
+                };
+                xQueueSend(gui_queue, &ev, portMAX_DELAY);
+            }
+            xTaskNotifyGive(xCalendarPrefetchHandle);
+            if (!isr_woken) {
+                xTaskNotify(xCalendarDisplayHandle, 0, eSetValueWithOverwrite);
+            }
+        } else {
+            ESP_LOGE(TAG, "No 'token' in JSON response!");
+        }
+        cJSON_Delete(event->json_root);
+    } else {
+        ESP_LOGE(TAG, "Login failed or JSON parse error: %s, err: %d",
+                 event->response_buffer ? event->response_buffer : "", err);
+        xEventGroupClearBits(net_event_group, NET_SERVER_CONNECTED_BIT);
+        event_t ev = {
+            .event_id = SCREEN_EVENT_NO_CONNECTION,
+            .msg = "Server connection failed, please check your network settings.",
+        };
+        xQueueSend(gui_queue, &ev, portMAX_DELAY);
+        ec11_set_button_callback(xServerCheckCallbackHandle);
+    }
+}
+
+/**
+ * @brief Callback to handle the response from the user settings request.
+ *
+ * This function is called after the device requests user settings. It expects
+ * a JSON response containing a base64-encoded QR code. It decodes the string
+ * and passes the QR code data to the UI task to be displayed.
+ *
+ * @param event The network event containing the response data.
+ * @param err The result of the HTTP request.
+ */
+static void user_settings_callback(net_event_t *event, esp_err_t err) {
+    if (err == ESP_OK && event->json_root) {
+        ESP_LOGI(TAG, "HTTP response: %s", event->response_buffer);
+        cJSON *setting_item = cJSON_GetObjectItem(event->json_root, "qr_c_array_base64");
+        if (setting_item && cJSON_IsString(setting_item)) {
+            uint8_t buf[256];
+            size_t olen = 0;
+            const char *b64str = setting_item->valuestring;
+            if (!mbedtls_base64_decode(buf, sizeof(buf), &olen, (const unsigned char *)b64str,
+                                       strlen(b64str))) {
+                ESP_LOGI(TAG, "Decoded base64 string successfully, length: %zu", olen);
+                event_t ev = {
+                    .event_id = SCREEN_EVENT_QRCODE,
+                };
+                setting_qrcode_setting((char *)buf);
+                xQueueSend(gui_queue, &ev, portMAX_DELAY);
+                UBaseType_t stack_remain = uxTaskGetStackHighWaterMark(NULL);
+                ESP_LOGI("TASK", "Stack high water mark: %u words", stack_remain);
+                ec11_set_button_callback(xButtonSettingDoneHandle);
+            }
+        } else {
+            ESP_LOGE(TAG, "No qrcode in JSON response!");
+        }
+        cJSON_Delete(event->json_root);
+    } else {
+        ESP_LOGE(TAG, "Failed to parse JSON or HTTP error: %s",
+                 event->response_buffer ? event->response_buffer : "");
+        xEventGroupClearBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
+    }
+}
+
+/**
+ * @brief Queues a request to log in to the server and obtain a JWT.
+ *
+ * This function constructs and sends a `net_event_t` to the `net_queue` for the
+ * worker task to process.
+ */
+
+void server_check(void) {
+    net_event_t event = {
+        .url = LOGIN_URL,
+        .method = HTTP_METHOD_POST,
+        .post_data = "{\"username\":\"esp32\", \"password\":\"supersecret\"}",
+        .use_jwt = false,
+        .response_buffer = responseBuffer,
+        .response_buffer_size = sizeof(responseBuffer),
+        .on_finish = server_check_callback,
+        .user_data = NULL,
+    };
+    xQueueSend(net_queue, &event, portMAX_DELAY);
+    return;
+}
+
+/**
+ * @brief Queues a request to fetch user-specific settings from the server.
+ *
+ * This function is typically called when the user needs to configure their account
+ * with the device. It retrieves the JWT from NVS and sends an authenticated request.
+ * If no token is found, it initiates a `server_check` to log in first.
+ */
+
+void userSettings(void) {
+    ESP_LOGI(TAG, "Getting user setting url...");
+    net_event_t event = {
+        .url = SETTING_URL,
+        .method = HTTP_METHOD_POST,
+        .post_data = NULL,
+        .use_jwt = true,
+        .response_buffer = responseBuffer,
+        .response_buffer_size = sizeof(responseBuffer),
+        .on_finish = user_settings_callback,
+        .user_data = NULL,
+    };
+    xQueueSendToFront(net_queue, &event, portMAX_DELAY);
+    return;
+}
+
+/**
  * @brief A worker task that processes network requests from a queue.
  *
  * This task waits for `net_event_t` items on `net_queue`. For each event, it
@@ -116,15 +241,21 @@ esp_err_t get_response_event_handler(esp_http_client_event_t *evt) {
  */
 void net_worker_task(void *pvParameters) {
     net_event_t event;
+    static char auth_header[256]; // Buffer for jwt token header
+    const uint32_t max_backoff_ms = MAX_BACKOFF_MS;
+    const uint8_t max_retry = 5; // Hardcoded maximum number of retries.
+    int http_status_code = 0;
+    esp_err_t err; // Initialize err for this attempt
+    uint8_t try_count;
+    uint32_t delay_ms; // Hardcoded initial delay.
+    uint8_t failure_count;
+    uint8_t success_count;
     for (;;) {
         if (xQueueReceive(net_queue, &event, portMAX_DELAY) == pdTRUE) {
-            int try_count = 0;
-            const int max_retry = 5; // Hardcoded maximum number of retries.
-            int delay_ms = 1000;     // Hardcoded initial delay.
-            int failure_count = 0;
-            int success_count = 0;
-            const int max_backoff_ms = MAX_BACKOFF_MS;
-            esp_err_t err; // Initialize err for this attempt
+            try_count = 0;
+            delay_ms = 1000; // Hardcoded initial delay.
+            failure_count = 0;
+            success_count = 0;
             while (1) {
                 xSemaphoreTake(xWifi, portMAX_DELAY);
                 // Configure the HTTP client.
@@ -136,7 +267,7 @@ void net_worker_task(void *pvParameters) {
                     .timeout_ms = 5000,
                     .event_handler = get_response_event_handler,
                     .cert_pem = isrgrootx1_pem_start,
-                    .user_data = event.save_to_buffer ? event.response_buffer : NULL,
+                    .user_data = event.response_buffer,
                 };
                 err = ESP_OK;
                 esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -144,7 +275,6 @@ void net_worker_task(void *pvParameters) {
                 if (event.use_jwt) {
                     char *token = jwt_load_from_nvs();
                     if (token) {
-                        static char auth_header[256];
                         snprintf(auth_header, sizeof(auth_header), "Bearer %s", token);
                         esp_http_client_set_header(client, "Authorization", auth_header);
                     }
@@ -182,15 +312,18 @@ void net_worker_task(void *pvParameters) {
                                      esp_err_to_name(fetch_header_ret));
                             err = fetch_header_ret; // Propagate error
                         } else {
+                            http_status_code =
+                                esp_http_client_get_status_code(client); // Get HTTP status code
                             // Headers fetched, now get status and content length for reading
                             // response
-                            if (event.save_to_buffer && event.response_buffer) {
+                            if (event.response_buffer) {
                                 int response_content_length =
                                     esp_http_client_get_content_length(client);
                                 int total_read_len = 0;
-                                event.response_buffer[0] = '\0'; // Initialize to empty string
+                                event.response_buffer[0] = '\0';
 
-                                if (response_content_length > 0) {
+                                if (response_content_length >
+                                    0) { // If there's response content, then read it
                                     if (response_content_length < event.response_buffer_size) {
                                         total_read_len = esp_http_client_read_response(
                                             client, event.response_buffer, response_content_length);
@@ -211,11 +344,11 @@ void net_worker_task(void *pvParameters) {
                                                 ;
                                         }
                                     }
-                                    if (total_read_len < 0) {
+                                    if (total_read_len < 0) { // Read failed, connection closed
                                         ESP_LOGE(TAG, "Failed to read response data: %s",
                                                  esp_err_to_name(total_read_len));
-                                        err = total_read_len; // Propagate error from read
-                                        total_read_len = 0;   // No valid data read
+                                        err = total_read_len;
+                                        total_read_len = 0;
                                     }
                                 } else if (response_content_length == 0) {
                                     total_read_len = 0; // No content
@@ -257,13 +390,33 @@ void net_worker_task(void *pvParameters) {
                 xSemaphoreGive(xWifi);         // Release semaphore AFTER all
 
                 // Automatically parse JSON if requested.
-                if (err == ESP_OK && event.json_parse && event.response_buffer) {
+                if (err == ESP_OK && event.response_buffer) {
                     cJSON *parsed_json = cJSON_Parse(event.response_buffer);
                     if (!parsed_json) {
                         ESP_LOGW(TAG, "Failed to parse JSON from response: %s",
                                  event.response_buffer);
                     }
                     event.json_root = parsed_json; // Store parsed result (or NULL if failed)
+                    if (http_status_code >= 400) {
+                        const char *error_message = NULL;
+                        if (parsed_json) {
+                            cJSON *item = cJSON_GetObjectItem(parsed_json, "error");
+                            error_message = cJSON_GetStringValue(item);
+                        }
+
+                        err = ESP_FAIL; // Treat HTTP errors as failures for retry logic.
+
+                        if (error_message) {
+                            ESP_LOGE(TAG, "HTTP Error %d for URL %s: %s", http_status_code,
+                                     event.url, error_message);
+                            if (strncmp(error_message, "JWT", 3) == 0) {
+                                server_check();
+                            } else if (strncmp(error_message, "Google", 6) == 0) {
+                                userSettings();
+                            }
+                            try_count = max_retry; // Force exit from the retry loop.
+                        }
+                    }
                 } else if (event.json_root !=
                            NULL) { // If parsing was requested but HTTP failed or no buffer
 
@@ -299,8 +452,8 @@ void net_worker_task(void *pvParameters) {
                 if (delay_ms > max_backoff_ms)
                     delay_ms = max_backoff_ms;
 
-                ESP_LOGW("NET_TASK", "Request failed, retry %d/%d after %d ms", try_count + 1,
-                         max_retry, delay_ms);
+                ESP_LOGW("NET_TASK", "Request failed, retry %u/%u after %lu ms", try_count + 1,
+                         max_retry, (unsigned long)delay_ms);
                 vTaskDelay(delay_ms / portTICK_PERIOD_MS);
                 try_count++;
             }
@@ -439,8 +592,8 @@ static void check_auth_result_callback(net_event_t *event, esp_err_t err) {
 }
 
 /**
- * @brief Task acting as a callback for a button press indicating the user has finished the settings
- * process.
+ * @brief Task acting as a callback for a button press indicating the user has finished the
+ * settings process.
  *
  * This task waits for a notification, then queues a network request to check the
  * authentication result with the server.
@@ -452,12 +605,10 @@ void cb_button_setting_done(void *pvParameters) {
         .method = HTTP_METHOD_GET,
         .post_data = NULL,
         .use_jwt = true,
-        .save_to_buffer = true,
         .response_buffer = responseBuffer,
         .response_buffer_size = sizeof(responseBuffer),
         .on_finish = check_auth_result_callback,
         .user_data = NULL,
-        .json_parse = 1,
     };
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -467,97 +618,8 @@ void cb_button_setting_done(void *pvParameters) {
 }
 
 /**
- * @brief Callback to handle the result of the initial server login/check.
- *
- * This function is called after the device attempts to log in to the server.
- * If successful, it saves the received JWT, sets event group bits to signal
- * that the server is connected and a token is available, and notifies other tasks
- * to proceed with their network-dependent operations. If it fails, it updates the
- * UI to show a connection error and sets up a button callback to retry.
- *
- * @param event The network event containing the response data.
- * @param err The result of the HTTP request.
- */
-static void server_check_callback(net_event_t *event, esp_err_t err) {
-    if (err == ESP_OK && event->json_root) {
-        cJSON *token_item = cJSON_GetObjectItem(event->json_root, "token");
-        if (token_item && cJSON_IsString(token_item)) {
-            const char *jwt = token_item->valuestring;
-            jwt_save_to_nvs(jwt);
-            ESP_LOGI(TAG, "Login success, token saved.");
-            xEventGroupSetBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
-            xEventGroupSetBits(net_event_group, NET_SERVER_CONNECTED_BIT);
-            if (!isr_woken) {
-                event_t ev = {
-                    .event_id = SCREEN_EVENT_CENTER,
-                    .msg = "Server connected successfully:)",
-                };
-                xQueueSend(gui_queue, &ev, portMAX_DELAY);
-            }
-            xTaskNotifyGive(xCalendarPrefetchHandle);
-            if (!isr_woken) {
-                xTaskNotify(xCalendarDisplayHandle, 0, eSetValueWithOverwrite);
-            }
-        } else {
-            ESP_LOGE(TAG, "No 'token' in JSON response!");
-        }
-        cJSON_Delete(event->json_root);
-    } else {
-        ESP_LOGE(TAG, "Login failed or JSON parse error: %s, err: %d",
-                 event->response_buffer ? event->response_buffer : "", err);
-        xEventGroupClearBits(net_event_group, NET_SERVER_CONNECTED_BIT);
-        event_t ev = {
-            .event_id = SCREEN_EVENT_NO_CONNECTION,
-            .msg = "Server connection failed, please check your network settings.",
-        };
-        xQueueSend(gui_queue, &ev, portMAX_DELAY);
-        ec11_set_button_callback(xServerCheckCallbackHandle);
-    }
-}
-
-/**
- * @brief Callback to handle the response from the user settings request.
- *
- * This function is called after the device requests user settings. It expects
- * a JSON response containing a base64-encoded QR code. It decodes the string
- * and passes the QR code data to the UI task to be displayed.
- *
- * @param event The network event containing the response data.
- * @param err The result of the HTTP request.
- */
-static void user_settings_callback(net_event_t *event, esp_err_t err) {
-    if (err == ESP_OK && event->json_root) {
-        ESP_LOGI(TAG, "HTTP response: %s", event->response_buffer);
-        cJSON *setting_item = cJSON_GetObjectItem(event->json_root, "qr_c_array_base64");
-        if (setting_item && cJSON_IsString(setting_item)) {
-            uint8_t buf[256];
-            size_t olen = 0;
-            const char *b64str = setting_item->valuestring;
-            if (!mbedtls_base64_decode(buf, sizeof(buf), &olen, (const unsigned char *)b64str,
-                                       strlen(b64str))) {
-                ESP_LOGI(TAG, "Decoded base64 string successfully, length: %zu", olen);
-                event_t ev = {
-                    .event_id = SCREEN_EVENT_QRCODE,
-                };
-                setting_qrcode_setting((char *)buf);
-                xQueueSend(gui_queue, &ev, portMAX_DELAY);
-                UBaseType_t stack_remain = uxTaskGetStackHighWaterMark(NULL);
-                ESP_LOGI("TASK", "Stack high water mark: %u words", stack_remain);
-                ec11_set_button_callback(xButtonSettingDoneHandle);
-            }
-        } else {
-            ESP_LOGE(TAG, "No qrcode in JSON response!");
-        }
-        cJSON_Delete(event->json_root);
-    } else {
-        ESP_LOGE(TAG, "Failed to parse JSON or HTTP error: %s",
-                 event->response_buffer ? event->response_buffer : "");
-        xEventGroupClearBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
-    }
-}
-
-/**
- * @brief Callback executed when the device successfully connects to Wi-Fi and gets an IP address.
+ * @brief Callback executed when the device successfully connects to Wi-Fi and gets an IP
+ * address.
  *
  * It sets the `NET_WIFI_CONNECTED_BIT` in the event group, updates the UI,
  * and triggers an initial check/login with the server.
@@ -601,80 +663,6 @@ void cb_wifi_required(void *pvParameter) {
     };
     xQueueSend(gui_queue, &ev, portMAX_DELAY);
     ec11_set_button_callback(xCbContinueNoWifiHandle);
-}
-
-/**
- * @brief Queues a request to log in to the server and obtain a JWT.
- *
- * This function constructs and sends a `net_event_t` to the `net_queue` for the
- * worker task to process.
- */
-void server_check(void) {
-    net_event_t event = {
-        .url = LOGIN_URL,
-        .method = HTTP_METHOD_POST,
-        .post_data = "{\"username\":\"esp32\", \"password\":\"supersecret\"}",
-        .use_jwt = false,
-        .save_to_buffer = true,
-        .response_buffer = responseBuffer,
-        .response_buffer_size = sizeof(responseBuffer),
-        .on_finish = server_check_callback,
-        .user_data = NULL,
-        .json_parse = 1,
-    };
-    xQueueSend(net_queue, &event, portMAX_DELAY);
-}
-
-/**
- * @brief Queues a request to fetch user-specific settings from the server.
- *
- * This function is typically called when the user needs to configure their account
- * with the device. It retrieves the JWT from NVS and sends an authenticated request.
- * If no token is found, it initiates a `server_check` to log in first.
- */
-void userSettings(void) {
-    ESP_LOGI(TAG, "Getting user setting url...");
-    char *token = jwt_load_from_nvs();
-    if (token) {
-        net_event_t event = {
-            .url = SETTING_URL,
-            .method = HTTP_METHOD_POST,
-            .post_data = NULL,
-            .use_jwt = true,
-            .save_to_buffer = true,
-            .response_buffer = responseBuffer,
-            .response_buffer_size = sizeof(responseBuffer),
-            .on_finish = user_settings_callback,
-            .user_data = NULL,
-            .json_parse = 1, // Request JSON parsing
-        };
-        xQueueSend(net_queue, &event, portMAX_DELAY);
-    } else {
-        ESP_LOGE(TAG, "No token found, skipping user settings fetch.");
-        xEventGroupClearBits(net_event_group, NET_TOKEN_AVAILABLE_BIT);
-        server_check(); // If no token, try to log in to the server.
-    }
-}
-
-/**
- * @brief [INCOMPLETE/UNUSED] Task intended to download calendar data.
- *
- * This function initializes an HTTP client but does not perform any request.
- * It appears to be incomplete or deprecated.
- *
- * @param pvParameters Unused.
- */
-void download_calendar_data_task(void *pvParameters) {
-    // esp_http_client_config_t config = {
-    //     .url = SETTING_URL,
-    //     .event_handler = get_response_event_handler,
-    //     .timeout_ms = 3000,
-    //     .cert_pem = isrgrootx1_pem_start,
-    //     .method = HTTP_METHOD_POST,
-    // };
-    // esp_http_client_handle_t client = esp_http_client_init(&config);
-    // esp_http_client_set_header(client, "Content-Type", "application/json");
-    // esp_http_client_set_header(client, "Accept-Encoding", "identity");
 }
 
 /**

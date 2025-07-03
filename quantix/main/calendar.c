@@ -2,6 +2,7 @@
 #include "cJSON.h"
 #include "driver/gpio.h"   // For GPIO configuration
 #include "driver/rtc_io.h" // For RTC GPIO pull-up/down control
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_sleep.h" // For deep sleep
 #include "esp_sntp.h"  // ESP_SNTP_OPMODE_POLL etc.
@@ -344,7 +345,8 @@ void collect_event_data_callback(net_event_t *event, esp_err_t result) {
                             strcat(missing_chars_total, missing_for_event);
                             current_missing_len += strlen(missing_for_event);
                         } else {
-                            // If too many missing fonts are found, download the current batch first.
+                            // If too many missing fonts are found, download the current batch
+                            // first.
                             download_missing_characters(missing_chars_total);
                             ESP_LOGW(TAG_CALENDAR,
                                      "Total missing characters buffer full. Cannot add more from "
@@ -441,12 +443,10 @@ void collect_event_data(struct tm timeinfo) {
         .method = HTTP_METHOD_POST,
         .post_data = dynamic_post_data, // Use the dynamically allocated buffer.
         .use_jwt = true,
-        .save_to_buffer = true,
         .response_buffer = calendar_api_response_buffer, // Use the static calendar response buffer.
         .response_buffer_size = sizeof(calendar_api_response_buffer),
         .on_finish = collect_event_data_callback,
         .user_data = date_for_ui_event, // Pass the date string to the UI.
-        .json_parse = 1,                // Request net_task to parse the JSON.
     };
     xQueueSend(net_queue, &event, portMAX_DELAY);
 }
@@ -466,8 +466,6 @@ void deep_sleep_manager_task(void *pvParameters) {
     ESP_LOGI(TAG_SLEEP_MGR, "Deep Sleep Manager task started.");
 
     for (;;) {
-        // Wait until sleep is requested.
-        ESP_LOGI(TAG_SLEEP_MGR, "Waiting for deep sleep request...");
         xEventGroupWaitBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT, pdFALSE, pdTRUE,
                             portMAX_DELAY);
         ESP_LOGI(TAG_SLEEP_MGR, "Deep sleep request received. Starting checks...");
@@ -634,7 +632,7 @@ static bool should_prefetch_date(struct tm target_date_ts) {
     return true;
 }
 
-// 日曆模塊啟動函數
+
 void calendar_prefetch_task(void *pvParameters) {
     // 等待 WiFi 連接
     xEventGroupWaitBits(net_event_group, NET_WIFI_CONNECTED_BIT, false, true, portMAX_DELAY);
@@ -793,6 +791,9 @@ void calendar_prefetch_task(void *pvParameters) {
         ESP_LOGI(TAG_PREFETCH, "Prefetch cycle complete. Requesting deep sleep.");
         xEventGroupSetBits(sleep_event_group, DEEP_SLEEP_REQUESTED_BIT);
         ec11_set_encoder_callback(xCalendarDisplayHandle);
+        ESP_LOGI("HEAP_TRACK", "--- Heap Usage Per Task ---");
+        heap_caps_print_heap_info((uint32_t)NULL); // 傳 NULL 表示印到日誌
+        ESP_LOGI("HEAP_TRACK", "---------------------------");
     }
 }
 

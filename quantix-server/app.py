@@ -104,66 +104,69 @@ def token_required(f):
     def decorated(*args, **kwargs):
         token = request.headers.get('Authorization')
         if not token or not token.startswith("Bearer "):
-            return jsonify({'error': 'Token missing'}), 403
+            return jsonify({'error': 'JWT Invalid token'}), 403
 
         try:
             token = token.split(" ")[1]
             payload = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
             g.current_user = payload.get('user')
         except jwt.ExpiredSignatureError:
-            return jsonify({'error': 'Token expired'}), 401
+            return jsonify({'error': 'JWT Token expired'}), 401
         except jwt.InvalidTokenError:
-            return jsonify({'error': 'Invalid token'}), 403
+            return jsonify({'error': 'JWT Invalid token'}), 403
 
         return f(*args, **kwargs)
     return decorated
 
 
-def ensure_google_token_valid(username):
-    google_info = authorized_users.get(username, {}).get('google')
-    if not google_info:
-        print(f"No Google token found for {username}")
-        return False
-    # 檢查是否過期
-    if time.time() > google_info.get('expires_at', 0):
-        # 嘗試 refresh
-        if not google_info.get('refresh_token'):
-            return False
-        response = requests.post(
-            "https://oauth2.googleapis.com/token",
-            data={
-                "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
-                "refresh_token": google_info['refresh_token'],
-                "grant_type": "refresh_token"
-            }
-        )
-        print(
-            f"Refreshing token for {username}, status: {response.status_code}")
-        if response.status_code == 200:
-            print(f"Token refresh response: {response.text}")
-            token_data = response.json()
-            google_info['access_token'] = token_data['access_token']
-            google_info['expires_at'] = time.time(
-            ) + token_data.get("expires_in", 3600)
-            save_authorized_users()  # 持久化更新後的 token
-            print(f"Token refreshed for {username}")
-            return True
-        else:
-            print(
-                f"Failed to refresh token for {username}, status: {response.status_code}, detail: {response.text}")
-            return False
-    return True
-
-
 def ensure_valid_google_token(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
+        # get username from authorized_users
         username = kwargs.get('username') or g.get('current_user')
         if not username:
             return jsonify({'error': 'No username found'}), 400
-        if not ensure_google_token_valid(username):
-            return jsonify({'error': 'Google token invalid or refresh failed'}), 401
+
+        # get google account info
+        google_info = authorized_users.get(username, {}).get('google')
+        if not google_info:
+            print(f"No Google token found for {username}")
+            return jsonify({'error': 'Google account not linked'}), 401
+
+        # get google token expiration
+        if time.time() > google_info.get('expires_at', 0):
+            refresh_token = google_info.get('refresh_token')
+            if not refresh_token:
+                print(f"No refresh token for {username}")
+                return jsonify({'error': 'Google token expired and no refresh token available'}), 401
+
+            print(f"Refreshing token for {username}...")
+            try:
+                response = requests.post(
+                    "https://oauth2.googleapis.com/token",
+                    data={
+                        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+                        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+                        "refresh_token": refresh_token,
+                        "grant_type": "refresh_token"
+                    },
+                    timeout=10 
+                )
+
+                if response.status_code == 200:
+                    token_data = response.json()
+                    google_info['access_token'] = token_data['access_token']
+                    google_info['expires_at'] = time.time() + token_data.get("expires_in", 3600)
+                    save_authorized_users()
+                    print(f"Token refreshed for {username}")
+                else:
+                    error_detail = response.json().get('error_description', response.text)
+                    print(f"Failed to refresh token for {username}, status: {response.status_code}, detail: {error_detail}")
+                    return jsonify({'error': 'Google token refresh failed', 'detail': error_detail}), 401
+            except requests.exceptions.RequestException as e:
+                print(f"Network error while refreshing token for {username}: {e}")
+                return jsonify({'error': 'Network error during token refresh'}), 500
+
         return f(*args, **kwargs)
     return wrapper
 
@@ -500,6 +503,7 @@ def get_calendar_events():
         })
     print(f"Found {len(result)} events for {date_str} in {username}'s calendar")
     return jsonify({"events": result})
+
 
 
 @app.route("/font")

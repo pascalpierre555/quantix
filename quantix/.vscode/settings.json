@@ -75,7 +75,8 @@
         "gpio.h": "c",
         "base64.h": "c",
         "stdbool.h": "c",
-        "stat.h": "c"
+        "stat.h": "c",
+        "sleep_manager.h": "c"
     },
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32s3"

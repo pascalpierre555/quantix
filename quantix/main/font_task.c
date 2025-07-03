@@ -574,12 +574,10 @@ esp_err_t download_missing_characters(const char *missing_chars) {
         .method = HTTP_METHOD_GET,
         .post_data = NULL,
         .use_jwt = false,
-        .save_to_buffer = true,
         .response_buffer = font_download_response_buffer,
         .response_buffer_size = sizeof(font_download_response_buffer),
         .on_finish = font_download_callback,
         .user_data = NULL,
-        .json_parse = 1, // 請求 net_worker_task 解析 JSON
     };
 
     // 使用前確保 font_download_response_buffer 是乾淨的
