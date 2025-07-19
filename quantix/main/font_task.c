@@ -18,7 +18,7 @@ static const char *TAG_FONT = "FONT_TASK";
 // 字型目錄長度 (不含結尾空字符)
 #define FONT_DIR_LEN (sizeof(FONT_DIR) - 1)
 // 字型hash table大小
-#define HASH_TABLE_SIZE 512
+#define HASH_TABLE_SIZE 4096
 // 字型下載緩衝區大小 (如果需要可以調整)
 #define FONT_DOWNLOAD_BUFFER_SIZE 4096
 
@@ -583,9 +583,6 @@ esp_err_t download_missing_characters(const char *missing_chars) {
     // 使用前確保 font_download_response_buffer 是乾淨的
     font_download_response_buffer[0] = '\0';
 
-    if (xQueueSend(net_queue, &font_event, pdMS_TO_TICKS(1000)) != pdPASS) {
-        ESP_LOGE(TAG_FONT, "Failed to send font download request to net_queue.");
-        return ESP_FAIL;
-    }
+    xQueueSend(net_queue, &font_event, pdMS_TO_TICKS(1000));
     return ESP_OK;
 }
