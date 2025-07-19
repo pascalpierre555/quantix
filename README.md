@@ -81,6 +81,7 @@ tailscale funnel 5000
 your server will also be reachable via a public .ts.net URL.
 
 ## Workflow
+![Flowchart](quantix/images/quantix_flowchart.png)
 1. First Boot: The device detects no Wi-Fi configuration and enters AP mode. The UI displays a prompt and a QR code. The user scans the code to connect to the device's AP and configures the home Wi-Fi SSID and password in a web portal.
 2. Connection Success: The device connects to the Wi-Fi and registers with the backend server, obtaining a JWT for subsequent API authentication.
 3. User Binding: The device retrieves a unique QR code from the server and displays it. The user scans this code with a mobile app (or other means) to bind the device to their user account.
